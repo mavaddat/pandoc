@@ -1,6 +1,64 @@
 Contributing to pandoc
 ======================
 
+Welcome to pandoc! Very soon after its beginnings in 2006, pandoc
+has been influenced, improved, and modified, by users, devs, and
+newcomers alike. The project thrives on its active community. It is
+great to have you here.
+
+How can I help?
+---------------
+
+There are many ways in which you can support pandoc. Here are a few
+ideas:
+
+  * Participate in online discussions. The [pandoc-discuss] mailing
+    list is a good place for this. This gives valuable input and
+    makes it easier to improve the program.
+
+  * Help with questions. Every request that is answered by the wider
+    community frees time for programming contributors. This will
+    speed up development of new features and issue fixes. Don't
+    underestimate your knowledge, please share it!
+
+    Good places to help are the [pandoc-discuss] mailing list, Q/A
+    sites like StackOverflow, community forums (e.g.
+    [RStudio][RStudio Community], [Zettlr][Zettlr Forum]), and, for
+    technical questions, the GitHub [issue tracker].
+
+  * Write or improve documentation. If you ran into a problem which
+    took more time to figure out than expected, please consider to
+    save other users from the same experience. People writing the
+    documentation tend to lack an outside view, so please help
+    provide one. Good documentation is both difficult and extremely
+    important.
+
+    The official docs are not the only place for documentation.
+    Pandoc also has a [Wiki][pandoc wiki]. Private blogs can serve
+    as documentation just as the official manual can.
+
+  * Contribute code. No matter whether it's a small fix in a format
+    template or a huge lump of Haskell code: help is welcome. It's
+    usually a good idea to talk about the plans early, as this can
+    prevent unnecessary work. See below for more information.
+
+  * Last but not least: consider funding the development and
+    maintenance of pandoc financially. You can find sponsor buttons
+    on the [pandoc website] and the [GitHub repository][GitHub
+    repo].
+
+A rich ecosystem of libraries, editors, filters, and templates has
+developed around pandoc; conversely, pandoc builds and depends on a
+large number of libraries. Contributing to any of these projects is
+another way that can help to ensure stability, and to keep pushing
+the boundaries of what is possible with pandoc.
+
+[RStudio Community]: https://community.rstudio.com/
+[Zettlr Forum]: https://forum.zettlr.com/
+[pandoc wiki]: https://github.com/jgm/pandoc/wiki
+[pandoc website]: https://pandoc.org
+[GitHub repo]: https://github.com/jgm/pandoc
+
 Have a question?
 ----------------
 
@@ -10,15 +68,21 @@ Ask on [pandoc-discuss].
 Found a bug?
 ------------
 
-Bug reports are welcome!  Please report all bugs on pandoc's github
+Bug reports are welcome!  Please report all bugs on pandoc's GitHub
 [issue tracker].
 
 Before you submit a bug report, search the [open issues] *and* [closed issues]
 to make sure the issue hasn't come up before. Also, check the [User's Guide] and
 [FAQs] for anything relevant.
 
-Make sure you can reproduce the bug with the [latest released version] of pandoc
-(or, even better, the [development version]).
+Make sure you can reproduce the bug with the [latest released
+version] of pandoc---or, even better, the development version,
+since the bug may have been fixed since the last release.
+[Nightly builds] are available, so you don't need to compile
+from source to test against the development version.
+(To fetch a nightly, visit the link, click the topmost "Nightly"
+in the table, then choose your platform under "Artifacts."  Note
+that you must be logged in with a GitHub account.)
 
 Your report should give detailed, *reproducible* instructions, including
 
@@ -99,7 +163,12 @@ Explain the rationale for the feature you're requesting.  Why would this
 feature be useful?  Consider also any possible drawbacks, including backwards
 compatibility, new library dependencies, and performance issues.
 
-It is best to discuss a potential new feature on [pandoc-discuss]
+Features are very rarely "implement and forget", as all code must be
+maintained. This is especially relevant for large or complex
+contributions. It is helpful to be sympathetic to that fact, and to
+communicate future plans and availability clearly.
+
+Any potential new feature is best discussed on [pandoc-discuss]
 before opening an issue.
 
 Patches and pull requests
@@ -146,7 +215,7 @@ Please follow these guidelines:
 
 10. We aim for compatibility with ghc versions from 8.0 to the
     latest release.  All pull requests and commits are tested
-    automatically on CircleCI.
+    automatically on GitHub Actions.
 
 Tests
 -----
@@ -175,9 +244,16 @@ Or with stack:
 
     stack test --test-arguments='-p markdown'
 
-It is often helpful to add `-j4` (run tests in parallel)
-and `--hide-successes` (don't clutter output with successes)
-to the test arguments as well.
+It is often helpful to add `-j4` (run tests in parallel) and
+`--hide-successes` (don't clutter output with successes) to the test
+arguments as well. Collecting all options in a `cabal.project.local`
+file in the project's root directory can help to keep `cabal`
+commands short. E.g.:
+
+    flags: +embed_data_files
+    tests: True
+    test-show-details: direct
+    test-options: -j4 --hide-successes
 
 If you add a new feature to pandoc, please add tests as well, following
 the pattern of the existing tests. The test suite code is in
@@ -200,6 +276,35 @@ or Powerpoint to ensure that they weren't corrupted and that
 they had the expected result, and mention the Word/Powerpoint
 version and OS in your commit comment.
 
+Code style
+----------
+
+Pandoc uses [hlint] to identify opportunities for code improvements
+like redundant brackets or unnecessary `Language` extensions.
+However, sometimes there are cases where there are good reasons to
+use code different from what hlint proposes. In these cases, the
+respective warning should be disabled in the file `.hlint.yaml`.
+
+There should be no errors when running `hlint .`; this is checked by
+the continuous integration (CI) setup. It is recommended that
+contributors check their code with a local hlint installation, but
+relying on the CI is fine, too.
+
+A good way to ensure no new warnings are introduced is to use a Git
+[pre-commit hook] which runs hlint on all updated Haskell files
+before creating a commit:
+
+    #!/bin/sh
+    git diff --diff-filter=MA --cached --name-only | grep '\.hs$' | \
+      xargs hlint --hint .hlint.yaml
+
+(If you are using GNU `xargs`, add the `-r` option immediately
+after `xargs`.)
+
+Saving this to `.git/hooks/pre-commit`, and making the script
+executable, will prevent accidental introduction of potentially
+problematic code.
+
 Benchmarks
 ----------
 
@@ -213,9 +318,6 @@ With stack:
 
     stack bench
 
-You can also build `weigh-pandoc` (`stack build pandoc:weigh-pandoc`)
-to get some statistics on memory usage.  (Eventually this should
-be incorporated into the benchmark suite.)
 
 Using the REPL
 --------------
@@ -227,10 +329,10 @@ a ghci REPL for working with pandoc.  With [stack], use
 We recommend using the following `.ghci` file (which can be
 placed in the source directory):
 
-	:set -fobject-code
-	:set -XTypeSynonymInstances
-	:set -XScopedTypeVariables
-	:set -XOverloadedStrings
+    :set -fobject-code
+    :set -XTypeSynonymInstances
+    :set -XScopedTypeVariables
+    :set -XOverloadedStrings
 
 Profiling
 ---------
@@ -274,7 +376,7 @@ The code
 --------
 
 Pandoc has a publicly accessible git repository on
-github: <http://github.com/jgm/pandoc>.  To get a local copy of the source:
+GitHub: <https://github.com/jgm/pandoc>.  To get a local copy of the source:
 
     git clone https://github.com/jgm/pandoc.git
 
@@ -284,7 +386,7 @@ the pandoc library is in `src/`, the source for the tests is in
 
 The modules `Text.Pandoc.Definition`, `Text.Pandoc.Builder`, and
 `Text.Pandoc.Generic` are in a separate library `pandoc-types`.  The code can
-be found in <http://github.com/jgm/pandoc-types>.
+be found in <https://github.com/jgm/pandoc-types>.
 
 To build pandoc, you will need a working installation of the
 [Haskell platform].
@@ -304,11 +406,11 @@ The library is structured as follows:
     tree automatically.
   - `Text.Pandoc.Readers.*` are the readers, and `Text.Pandoc.Writers.*`
     are the writers.
-  - `Text.Pandoc.Biblio` is a utility module for formatting citations
-    using citeproc-hs.
+  - `Text.Pandoc.Citeproc.*` contain the code for citation handling,
+    including an interface to the [citeproc] library.
   - `Text.Pandoc.Data` is used to embed data files when the `embed_data_files`
-    cabal flag is used.  It is generated from `src/Text/Pandoc/Data.hsb` using
-    the preprocessor [hsb2hs].
+    cabal flag is used.
+  - `Text.Pandoc.Emoji` is a thin wrapper around [emojis].
   - `Text.Pandoc.Highlighting` contains the interface to the
     skylighting library, which is used for code syntax highlighting.
   - `Text.Pandoc.ImageSize` is a utility module containing functions for
@@ -319,7 +421,6 @@ The library is structured as follows:
   - `Text.Pandoc.PDF` contains functions for producing a PDF from a
     LaTeX source.
   - `Text.Pandoc.Parsing` contains parsing functions used in multiple readers.
-  - `Text.Pandoc.Pretty` is a pretty-printing library specialized to
     the needs of pandoc.
   - `Text.Pandoc.SelfContained` contains functions for making an HTML
     file "self-contained," by importing remotely linked images, CSS,
@@ -346,14 +447,18 @@ you may want to consider submitting a pull request to the
 [open issues]: https://github.com/jgm/pandoc/issues
 [closed issues]: https://github.com/jgm/pandoc/issues?q=is%3Aissue+is%3Aclosed
 [latest released version]: https://github.com/jgm/pandoc/releases/latest
-[development version]: https://github.com/pandoc-extras/pandoc-nightly/releases/latest
-[pandoc-discuss]: http://groups.google.com/group/pandoc-discuss
+[Nightly builds]: https://github.com/jgm/pandoc/actions?query=workflow%3ANightly
+[pandoc-discuss]: https://groups.google.com/group/pandoc-discuss
 [issue tracker]: https://github.com/jgm/pandoc/issues
-[User's Guide]: http://pandoc.org/MANUAL.html
-[FAQs]:  http://pandoc.org/faqs.html
-[EditorConfig]: http://editorconfig.org/
-[Haskell platform]: http://www.haskell.org/platform/
-[hsb2hs]: http://hackage.haskell.org/package/hsb2hs
+[User's Guide]: https://pandoc.org/MANUAL.html
+[FAQs]:  https://pandoc.org/faqs.html
+[EditorConfig]: https://editorconfig.org/
+[Haskell platform]: https://www.haskell.org/platform/
+[hlint]: https://hackage.haskell.org/package/hlint
+[citeproc]: https://hackage.haskell.org/package/citeproc
+[emojis]: https://hackage.haskell.org/package/emojis
+[hsb2hs]: https://hackage.haskell.org/package/hsb2hs
+[pre-commit hook]: https://git-scm.com/book/en/v2/Customizing-Git-Git-Hooks
 [GitHub labels]: https://github.com/jgm/pandoc/labels
 [good first issue]:https://github.com/jgm/pandoc/labels/good%20first%20issue
 [enhancement]: https://github.com/jgm/pandoc/labels/enhancement
@@ -368,4 +473,3 @@ you may want to consider submitting a pull request to the
 [status:more-discussion-needed]: https://github.com/jgm/pandoc/labels/status:more-discussion-needed
 [status:more-info-needed]: https://github.com/jgm/pandoc/labels/status:more-info-needed
 [stack]: https://github.com/commercialhaskell/stack
-

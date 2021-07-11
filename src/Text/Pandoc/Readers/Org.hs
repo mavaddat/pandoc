@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Readers.Org
-   Copyright   : Copyright (C) 2014-2020 Albert Krewinkel
+   Copyright   : Copyright (C) 2014-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
@@ -18,22 +18,19 @@ import Text.Pandoc.Class.PandocMonad (PandocMonad)
 import Text.Pandoc.Definition
 import Text.Pandoc.Options
 import Text.Pandoc.Parsing (reportLogMessages)
-import Text.Pandoc.Shared (crFilter)
-
+import Text.Pandoc.Sources (ToSources(..), ensureFinalNewlines)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (runReaderT)
 
-import Data.Text (Text)
-
 -- | Parse org-mode string and return a Pandoc document.
-readOrg :: PandocMonad m
+readOrg :: (PandocMonad m, ToSources a)
         => ReaderOptions -- ^ Reader options
-        -> Text          -- ^ String to parse (assuming @'\n'@ line endings)
+        -> a
         -> m Pandoc
 readOrg opts s = do
   parsed <- flip runReaderT def $
             readWithM parseOrg (optionsToParserState opts)
-            (crFilter s <> "\n\n")
+            (ensureFinalNewlines 2 (toSources s))
   case parsed of
     Right result -> return result
     Left  e      -> throwError e

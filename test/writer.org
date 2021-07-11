@@ -1,7 +1,7 @@
-#+TITLE: Pandoc Test Suite
+#+title: Pandoc Test Suite
 
-#+AUTHOR: John MacFarlane; Anonymous
-#+DATE: July 17, 2006
+#+author: John MacFarlane; Anonymous
+#+date: July 17, 2006
 
 This is a set of tests for pandoc. Most of them are adapted from John Gruber's
 markdown test suite.
@@ -12,49 +12,40 @@ markdown test suite.
   :PROPERTIES:
   :CUSTOM_ID: headers
   :END:
-
 ** Level 2 with an [[/url][embedded link]]
    :PROPERTIES:
    :CUSTOM_ID: level-2-with-an-embedded-link
    :END:
-
 *** Level 3 with /emphasis/
     :PROPERTIES:
     :CUSTOM_ID: level-3-with-emphasis
     :END:
-
 **** Level 4
      :PROPERTIES:
      :CUSTOM_ID: level-4
      :END:
-
 ***** Level 5
       :PROPERTIES:
       :CUSTOM_ID: level-5
       :END:
-
 * Level 1
   :PROPERTIES:
   :CUSTOM_ID: level-1
   :END:
-
 ** Level 2 with /emphasis/
    :PROPERTIES:
    :CUSTOM_ID: level-2-with-emphasis
    :END:
-
 *** Level 3
     :PROPERTIES:
     :CUSTOM_ID: level-3
     :END:
-
 with no blank line
 
 ** Level 2
    :PROPERTIES:
    :CUSTOM_ID: level-2
    :END:
-
 with no blank line
 
 --------------
@@ -63,7 +54,6 @@ with no blank line
   :PROPERTIES:
   :CUSTOM_ID: paragraphs
   :END:
-
 Here's a regular paragraph.
 
 In Markdown 1.0.0 and earlier. Version 8. This line turns into a list item.
@@ -81,21 +71,20 @@ here.
   :PROPERTIES:
   :CUSTOM_ID: block-quotes
   :END:
-
 E-mail style:
 
-#+BEGIN_QUOTE
+#+begin_quote
   This is a block quote. It is pretty short.
-#+END_QUOTE
+#+end_quote
 
-#+BEGIN_QUOTE
+#+begin_quote
   Code in a block quote:
 
-  #+BEGIN_EXAMPLE
+  #+begin_example
     sub status {
         print "working";
     }
-  #+END_EXAMPLE
+  #+end_example
 
   A list:
 
@@ -104,14 +93,14 @@ E-mail style:
 
   Nested block quotes:
 
-  #+BEGIN_QUOTE
+  #+begin_quote
     nested
-  #+END_QUOTE
+  #+end_quote
 
-  #+BEGIN_QUOTE
+  #+begin_quote
     nested
-  #+END_QUOTE
-#+END_QUOTE
+  #+end_quote
+#+end_quote
 
 This should not be a block quote: 2 > 1.
 
@@ -123,10 +112,9 @@ And a following paragraph.
   :PROPERTIES:
   :CUSTOM_ID: code-blocks
   :END:
-
 Code:
 
-#+BEGIN_EXAMPLE
+#+begin_example
   ---- (should be four hyphens)
 
   sub status {
@@ -134,15 +122,15 @@ Code:
   }
 
   this code block is indented by one tab
-#+END_EXAMPLE
+#+end_example
 
 And:
 
-#+BEGIN_EXAMPLE
+#+begin_example
       this code block is indented by two tabs
 
   These should not be escaped:  \$ \\ \> \[ \{
-#+END_EXAMPLE
+#+end_example
 
 --------------
 
@@ -150,12 +138,10 @@ And:
   :PROPERTIES:
   :CUSTOM_ID: lists
   :END:
-
 ** Unordered
    :PROPERTIES:
    :CUSTOM_ID: unordered
    :END:
-
 Asterisks tight:
 
 - asterisk 1
@@ -202,7 +188,6 @@ Minuses loose:
    :PROPERTIES:
    :CUSTOM_ID: ordered
    :END:
-
 Tight:
 
 1. First
@@ -334,7 +319,6 @@ B. Williams
   :PROPERTIES:
   :CUSTOM_ID: definition-lists
   :END:
-
 Tight using spaces:
 
 - apple :: red fruit
@@ -363,13 +347,13 @@ Multiple blocks with italics:
 
 - /orange/ :: orange fruit
 
-  #+BEGIN_EXAMPLE
+  #+begin_example
     { orange code block }
-  #+END_EXAMPLE
+  #+end_example
 
-  #+BEGIN_QUOTE
+  #+begin_quote
     orange block quote
-  #+END_QUOTE
+  #+end_quote
 
 Multiple definitions, tight:
 
@@ -403,7 +387,6 @@ Blank line after term, indented marker, alternate markers:
   :PROPERTIES:
   :CUSTOM_ID: html-blocks
   :END:
-
 Simple block on one line:
 
 foo
@@ -416,45 +399,45 @@ bar
 
 Interpreted markdown in a table:
 
-#+BEGIN_HTML
+#+begin_html
   <table>
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <tr>
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <td>
-#+END_HTML
+#+end_html
 
 This is /emphasized/
 
-#+BEGIN_HTML
+#+begin_html
   </td>
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <td>
-#+END_HTML
+#+end_html
 
 And this is *strong*
 
-#+BEGIN_HTML
+#+begin_html
   </td>
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   </tr>
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   </table>
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <script type="text/javascript">document.write('This *should not* be interpreted as markdown');</script>
-#+END_HTML
+#+end_html
 
 Here's a simple block:
 
@@ -462,17 +445,17 @@ foo
 
 This should be a code block, though:
 
-#+BEGIN_EXAMPLE
+#+begin_example
   <div>
       foo
   </div>
-#+END_EXAMPLE
+#+end_example
 
 As should this:
 
-#+BEGIN_EXAMPLE
+#+begin_example
   <div>foo</div>
-#+END_EXAMPLE
+#+end_example
 
 Now, nested:
 
@@ -480,80 +463,80 @@ foo
 
 This should just be an HTML comment:
 
-#+BEGIN_HTML
+#+begin_html
   <!-- Comment -->
-#+END_HTML
+#+end_html
 
 Multiline:
 
-#+BEGIN_HTML
+#+begin_html
   <!--
   Blah
   Blah
   -->
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <!--
       This is another comment.
   -->
-#+END_HTML
+#+end_html
 
 Code block:
 
-#+BEGIN_EXAMPLE
+#+begin_example
   <!-- Comment -->
-#+END_EXAMPLE
+#+end_example
 
 Just plain comment, with trailing spaces on the line:
 
-#+BEGIN_HTML
+#+begin_html
   <!-- foo -->
-#+END_HTML
+#+end_html
 
 Code:
 
-#+BEGIN_EXAMPLE
+#+begin_example
   <hr />
-#+END_EXAMPLE
+#+end_example
 
 Hr's:
 
-#+BEGIN_HTML
+#+begin_html
   <hr>
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <hr />
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <hr />
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <hr>
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <hr />
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <hr />
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <hr class="foo" id="bar" />
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <hr class="foo" id="bar" />
-#+END_HTML
+#+end_html
 
-#+BEGIN_HTML
+#+begin_html
   <hr class="foo" id="bar">
-#+END_HTML
+#+end_html
 
 --------------
 
@@ -561,7 +544,6 @@ Hr's:
   :PROPERTIES:
   :CUSTOM_ID: inline-markup
   :END:
-
 This is /emphasized/, and so /is this/.
 
 This is *strong*, and so *is this*.
@@ -593,7 +575,6 @@ spaces: a^b c^d, a~b c~d.
   :PROPERTIES:
   :CUSTOM_ID: smart-quotes-ellipses-dashes
   :END:
-
 "Hello," said the spider. "'Shelob' is my name."
 
 'A', 'B', and 'C' are letters.
@@ -619,14 +600,14 @@ Ellipses...and...and....
   :END:
 
 - \cite[22-23]{smith.1899}
-- $2+2=4$
-- $x \in y$
-- $\alpha \wedge \omega$
-- $223$
-- $p$-Tree
+- \(2+2=4\)
+- \(x \in y\)
+- \(\alpha \wedge \omega\)
+- \(223\)
+- \(p\)-Tree
 - Here's some display math:
-  $$\frac{d}{dx}f(x)=\lim_{h\to 0}\frac{f(x+h)-f(x)}{h}$$
-- Here's one that has a line break in it: $\alpha + \omega \times x^2$.
+  \[\frac{d}{dx}f(x)=\lim_{h\to 0}\frac{f(x+h)-f(x)}{h}\]
+- Here's one that has a line break in it: \(\alpha + \omega \times x^2\).
 
 These shouldn't be math:
 
@@ -650,7 +631,6 @@ Cat    & 1      \\ \hline
   :PROPERTIES:
   :CUSTOM_ID: special-characters
   :END:
-
 Here is some unicode:
 
 - I hat: Î
@@ -707,12 +687,10 @@ Minus: -
   :PROPERTIES:
   :CUSTOM_ID: links
   :END:
-
 ** Explicit
    :PROPERTIES:
    :CUSTOM_ID: explicit
    :END:
-
 Just a [[/url/][URL]].
 
 [[/url/][URL and title]].
@@ -735,7 +713,6 @@ Just a [[/url/][URL]].
    :PROPERTIES:
    :CUSTOM_ID: reference
    :END:
-
 Foo [[/url/][bar]].
 
 With [[/url/][embedded [brackets]]].
@@ -750,9 +727,9 @@ Indented [[/url][thrice]].
 
 This should [not][] be a link.
 
-#+BEGIN_EXAMPLE
+#+begin_example
   [not]: /url
-#+END_EXAMPLE
+#+end_example
 
 Foo [[/url/][bar]].
 
@@ -762,7 +739,6 @@ Foo [[/url/][biz]].
    :PROPERTIES:
    :CUSTOM_ID: with-ampersands
    :END:
-
 Here's a [[http://example.com/?foo=1&bar=2][link with an ampersand in the
 URL]].
 
@@ -776,7 +752,6 @@ Here's an [[/script?foo=1&bar=2][inline link in pointy braces]].
    :PROPERTIES:
    :CUSTOM_ID: autolinks
    :END:
-
 With an ampersand: [[http://example.com/?foo=1&bar=2]]
 
 - In a list?
@@ -785,15 +760,15 @@ With an ampersand: [[http://example.com/?foo=1&bar=2]]
 
 An e-mail address: [[mailto:nobody@nowhere.net][nobody@nowhere.net]]
 
-#+BEGIN_QUOTE
+#+begin_quote
   Blockquoted: [[http://example.com/]]
-#+END_QUOTE
+#+end_quote
 
 Auto-links should not occur here: =<http://example.com/>=
 
-#+BEGIN_EXAMPLE
+#+begin_example
   or here: <http://example.com/>
-#+END_EXAMPLE
+#+end_example
 
 --------------
 
@@ -801,10 +776,9 @@ Auto-links should not occur here: =<http://example.com/>=
   :PROPERTIES:
   :CUSTOM_ID: images
   :END:
-
 From "Voyage dans la Lune" by Georges Melies (1902):
 
-#+CAPTION: lalune
+#+caption: lalune
 [[file:lalune.jpg]]
 
 Here is a movie [[file:movie.jpg]] icon.
@@ -815,14 +789,13 @@ Here is a movie [[file:movie.jpg]] icon.
   :PROPERTIES:
   :CUSTOM_ID: footnotes
   :END:
-
 Here is a footnote reference,[fn:1] and another.[fn:2] This should /not/ be a
 footnote reference, because it contains a space.[^my note] Here is an inline
 note.[fn:3]
 
-#+BEGIN_QUOTE
+#+begin_quote
   Notes can go in quotes.[fn:4]
-#+END_QUOTE
+#+end_quote
 
 1. And in list items.[fn:5]
 
@@ -836,9 +809,9 @@ This paragraph should not be part of the note, as it is not indented.
        Subsequent blocks are indented to show that they belong to the footnote
        (as with list items).
 
-       #+BEGIN_EXAMPLE
+       #+begin_example
            { <code> }
-       #+END_EXAMPLE
+       #+end_example
 
        If you want, you can indent every line, but you can also be lazy and
        just indent the first line of each block.

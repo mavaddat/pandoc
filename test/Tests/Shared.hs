@@ -1,8 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Tests.Shared
-   Copyright   : © 2006-2020 John MacFarlane
+   Copyright   : © 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley@edu>
@@ -13,7 +12,6 @@ Tests for functions used in many parts of the library.
 -}
 module Tests.Shared (tests) where
 
-import Prelude
 import System.FilePath.Posix (joinPath)
 import Test.Tasty
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -35,24 +33,24 @@ tests = [ testGroup "compactifyDL"
 
 testCollapse :: [TestTree]
 testCollapse = map (testCase "collapse")
- [  collapseFilePath (joinPath [ ""]) @?= (joinPath [ ""])
- ,  collapseFilePath (joinPath [ ".","foo"]) @?= (joinPath [ "foo"])
- ,  collapseFilePath (joinPath [ ".",".","..","foo"]) @?= (joinPath [ joinPath ["..", "foo"]])
- ,  collapseFilePath (joinPath [ "..","foo"]) @?= (joinPath [ "..","foo"])
- ,  collapseFilePath (joinPath [ "","bar","..","baz"]) @?= (joinPath [ "","baz"])
- ,  collapseFilePath (joinPath [ "","..","baz"]) @?= (joinPath [ "","..","baz"])
- ,  collapseFilePath (joinPath [ ".","foo","..",".","bar","..",".",".","baz"]) @?= (joinPath [ "baz"])
- ,  collapseFilePath (joinPath [ ".",""]) @?= (joinPath [ ""])
- ,  collapseFilePath (joinPath [ ".",".",""]) @?= (joinPath [ ""])
- ,  collapseFilePath (joinPath [ "..",""]) @?= (joinPath [ ".."])
- ,  collapseFilePath (joinPath [ "..",".",""]) @?= (joinPath [ ".."])
- ,  collapseFilePath (joinPath [ ".","..",""]) @?= (joinPath [ ".."])
- ,  collapseFilePath (joinPath [ "..","..",""]) @?= (joinPath [ "..",".."])
- ,  collapseFilePath (joinPath [ "parent","foo","baz","..","bar"]) @?= (joinPath [ "parent","foo","bar"])
- ,  collapseFilePath (joinPath [ "parent","foo","baz","..","..","bar"]) @?= (joinPath [ "parent","bar"])
- ,  collapseFilePath (joinPath [ "parent","foo",".."]) @?= (joinPath [ "parent"])
- ,  collapseFilePath (joinPath [ "","parent","foo","..","..","bar"]) @?= (joinPath [ "","bar"])
- ,  collapseFilePath (joinPath [ "",".","parent","foo"]) @?= (joinPath [ "","parent","foo"])]
+ [  collapseFilePath (joinPath [ ""]) @?= joinPath [ ""]
+ ,  collapseFilePath (joinPath [ ".","foo"]) @?= joinPath [ "foo"]
+ ,  collapseFilePath (joinPath [ ".",".","..","foo"]) @?= joinPath [ joinPath ["..", "foo"]]
+ ,  collapseFilePath (joinPath [ "..","foo"]) @?= joinPath [ "..","foo"]
+ ,  collapseFilePath (joinPath [ "","bar","..","baz"]) @?= joinPath [ "","baz"]
+ ,  collapseFilePath (joinPath [ "","..","baz"]) @?= joinPath [ "","..","baz"]
+ ,  collapseFilePath (joinPath [ ".","foo","..",".","bar","..",".",".","baz"]) @?= joinPath [ "baz"]
+ ,  collapseFilePath (joinPath [ ".",""]) @?= joinPath [ ""]
+ ,  collapseFilePath (joinPath [ ".",".",""]) @?= joinPath [ ""]
+ ,  collapseFilePath (joinPath [ "..",""]) @?= joinPath [ ".."]
+ ,  collapseFilePath (joinPath [ "..",".",""]) @?= joinPath [ ".."]
+ ,  collapseFilePath (joinPath [ ".","..",""]) @?= joinPath [ ".."]
+ ,  collapseFilePath (joinPath [ "..","..",""]) @?= joinPath [ "..",".."]
+ ,  collapseFilePath (joinPath [ "parent","foo","baz","..","bar"]) @?= joinPath [ "parent","foo","bar"]
+ ,  collapseFilePath (joinPath [ "parent","foo","baz","..","..","bar"]) @?= joinPath [ "parent","bar"]
+ ,  collapseFilePath (joinPath [ "parent","foo",".."]) @?= joinPath [ "parent"]
+ ,  collapseFilePath (joinPath [ "","parent","foo","..","..","bar"]) @?= joinPath [ "","bar"]
+ ,  collapseFilePath (joinPath [ "",".","parent","foo"]) @?= joinPath [ "","parent","foo"]]
 
 testLegacyTable :: [TestTree]
 testLegacyTable =

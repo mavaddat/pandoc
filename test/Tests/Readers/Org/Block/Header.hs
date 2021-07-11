@@ -1,8 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Tests.Readers.Org.Block.Header
-   Copyright   : © 2014-2020 Albert Krewinkel
+   Copyright   : © 2014-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <albert@zeitkraut.de>
@@ -13,7 +12,6 @@ Test parsing of org header blocks.
 -}
 module Tests.Readers.Org.Block.Header (tests) where
 
-import Prelude
 import Test.Tasty (TestTree, testGroup)
 import Tests.Helpers ((=?>))
 import Tests.Readers.Org.Shared ((=:), spcSep, tagSpan)
@@ -99,7 +97,7 @@ tests =
         headerWith ("waiting-header", [], []) 1 "WAITING header"
 
     , "Custom todo keywords" =:
-        T.unlines [ "#+TODO: WAITING CANCELLED"
+        T.unlines [ "#+todo: WAITING CANCELLED"
                   , "* WAITING compile"
                   , "* CANCELLED lunch"
                   ] =?>
@@ -109,7 +107,7 @@ tests =
         <> headerWith ("lunch", [], []) 1 (doneSpan <> space <> "lunch")
 
     , "Custom todo keywords with multiple done-states" =:
-        T.unlines [ "#+TODO: WAITING | DONE CANCELLED "
+        T.unlines [ "#+todo: WAITING | DONE CANCELLED "
                   , "* WAITING compile"
                   , "* CANCELLED lunch"
                   , "* DONE todo-feature"
@@ -248,7 +246,7 @@ tests =
       headerWith ("look", [], []) 1 "important"
 
     , "third and forth level headers" =:
-      T.unlines [ "#+OPTIONS: p:t h:3"
+      T.unlines [ "#+options: p:t h:3"
                 , "*** Third"
                 , "    CLOSED: [2018-09-05 Wed 13:58]"
                 , "    Text 3"

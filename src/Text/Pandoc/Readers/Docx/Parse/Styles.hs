@@ -44,16 +44,17 @@ module Text.Pandoc.Readers.Docx.Parse.Styles (
   ) where
 import Codec.Archive.Zip
 import Control.Applicative ((<|>))
-import Control.Monad.Except
 import Data.Function (on)
 import Data.String (IsString(..))
 import qualified Data.Map as M
 import qualified Data.Text as T
+import qualified Data.Text.Read
+import Data.Text (Text)
 import Data.Maybe
 import Data.Coerce
 import Text.Pandoc.Readers.Docx.Util
 import qualified Text.Pandoc.UTF8 as UTF8
-import Text.XML.Light
+import Text.Pandoc.XML.Light
 
 newtype CharStyleId   = CharStyleId T.Text
   deriving (Show, Eq, Ord, IsString, FromStyleId)
@@ -101,12 +102,15 @@ data CharStyle = CharStyle { cStyleId   :: CharStyleId
                            } deriving (Show)
 
 data RunStyle = RunStyle { isBold       :: Maybe Bool
+                         , isBoldCTL    :: Maybe Bool
                          , isItalic     :: Maybe Bool
+                         , isItalicCTL  :: Maybe Bool
                          , isSmallCaps  :: Maybe Bool
                          , isStrike     :: Maybe Bool
                          , isRTL        :: Maybe Bool
+                         , isForceCTL   :: Maybe Bool
                          , rVertAlign   :: Maybe VertAlign
-                         , rUnderline   :: Maybe String
+                         , rUnderline   :: Maybe Text
                          , rParentStyle :: Maybe CharStyle
                          }
                 deriving Show
@@ -121,28 +125,34 @@ data ParStyle = ParStyle { headingLev    :: Maybe (ParaStyleName, Int)
 
 defaultRunStyle :: RunStyle
 defaultRunStyle = RunStyle { isBold = Nothing
+                           , isBoldCTL = Nothing
                            , isItalic = Nothing
+                           , isItalicCTL = Nothing
                            , isSmallCaps = Nothing
                            , isStrike = Nothing
                            , isRTL = Nothing
+                           , isForceCTL = Nothing
                            , rVertAlign = Nothing
                            , rUnderline = Nothing
                            , rParentStyle = Nothing
                            }
 
-archiveToStyles' :: (Ord k1, Ord k2, ElemToStyle a1, ElemToStyle a2) =>
-                    (a1 -> k1) -> (a2 -> k2) -> Archive -> (M.Map k1 a1, M.Map k2 a2)
+archiveToStyles'
+  :: (Ord k1, Ord k2, ElemToStyle a1, ElemToStyle a2)
+  => (a1 -> k1) -> (a2 -> k2) -> Archive -> (M.Map k1 a1, M.Map k2 a2)
 archiveToStyles' conv1 conv2 zf =
-  let stylesElem = findEntryByPath "word/styles.xml" zf >>=
-                   (parseXMLDoc . UTF8.toStringLazy . fromEntry)
-  in
-   case stylesElem of
-     Nothing -> (M.empty, M.empty)
-     Just styElem ->
-       let namespaces = elemToNameSpaces styElem
-       in
-        ( M.fromList $ map (\r -> (conv1 r, r)) $ buildBasedOnList namespaces styElem Nothing,
-          M.fromList $ map (\p -> (conv2 p, p)) $ buildBasedOnList namespaces styElem Nothing)
+  case findEntryByPath "word/styles.xml" zf of
+    Nothing -> (M.empty, M.empty)
+    Just entry ->
+      case parseXMLElement . UTF8.toTextLazy . fromEntry $ entry of
+        Left _ -> (M.empty, M.empty)
+        Right styElem ->
+          let namespaces = elemToNameSpaces styElem
+          in
+           ( M.fromList $ map (\r -> (conv1 r, r)) $
+               buildBasedOnList namespaces styElem Nothing,
+             M.fromList $ map (\p -> (conv2 p, p)) $
+               buildBasedOnList namespaces styElem Nothing)
 
 isBasedOnStyle :: (ElemToStyle a, FromStyleId (StyleId a)) => NameSpaces -> Element -> Maybe a -> Bool
 isBasedOnStyle ns element parentStyle
@@ -150,7 +160,7 @@ isBasedOnStyle ns element parentStyle
   , Just styleType <- findAttrByName ns "w" "type" element
   , styleType == cStyleType parentStyle
   , Just basedOnVal <- findChildByName ns "w" "basedOn" element >>=
-                       findAttrTextByName ns "w" "val"
+                       findAttrByName ns "w" "val"
   , Just ps <- parentStyle = basedOnVal == fromStyleId (getStyleId ps)
   | isElem ns "w" "style" element
   , Just styleType <- findAttrByName ns "w" "type" element
@@ -160,7 +170,7 @@ isBasedOnStyle ns element parentStyle
   | otherwise = False
 
 class HasStyleId a => ElemToStyle a where
-  cStyleType  :: Maybe a -> String
+  cStyleType  :: Maybe a -> Text
   elemToStyle :: NameSpaces -> Element -> Maybe a -> Maybe a
 
 class FromStyleId (StyleId a) => HasStyleId a where
@@ -217,8 +227,10 @@ buildBasedOnList ns element rootStyle =
     stys -> stys ++
             concatMap (buildBasedOnList ns element . Just) stys
 
-stringToInteger :: String -> Maybe Integer
-stringToInteger s = listToMaybe $ map fst (reads s :: [(Integer, String)])
+stringToInteger :: Text -> Maybe Integer
+stringToInteger s = case Data.Text.Read.decimal s of
+                      Right (x,_) -> Just x
+                      Left _      -> Nothing
 
 checkOnOff :: NameSpaces -> Element -> QName -> Maybe Bool
 checkOnOff ns rPr tag
@@ -238,22 +250,23 @@ checkOnOff _ _ _ = Nothing
 elemToCharStyle :: NameSpaces
                 -> Element -> Maybe CharStyle -> Maybe CharStyle
 elemToCharStyle ns element parentStyle
-  = CharStyle <$> (CharStyleId <$> findAttrTextByName ns "w" "styleId" element)
+  = CharStyle <$> (CharStyleId <$> findAttrByName ns "w" "styleId" element)
               <*> getElementStyleName ns element
-              <*> (Just $ elemToRunStyle ns element parentStyle)
+              <*> Just (elemToRunStyle ns element parentStyle)
 
 elemToRunStyle :: NameSpaces -> Element -> Maybe CharStyle -> RunStyle
 elemToRunStyle ns element parentStyle
   | Just rPr <- findChildByName ns "w" "rPr" element =
     RunStyle
       {
-        isBold = checkOnOff ns rPr (elemName ns "w" "b") `mplus`
-                 checkOnOff ns rPr (elemName ns "w" "bCs")
-      , isItalic = checkOnOff ns rPr (elemName ns "w" "i") `mplus`
-                   checkOnOff ns rPr (elemName ns "w" "iCs")
+        isBold = checkOnOff ns rPr (elemName ns "w" "b")
+      , isBoldCTL = checkOnOff ns rPr (elemName ns "w" "bCs")
+      , isItalic = checkOnOff ns rPr (elemName ns "w" "i")
+      , isItalicCTL = checkOnOff ns rPr (elemName ns "w" "iCs")
       , isSmallCaps = checkOnOff ns rPr (elemName ns "w" "smallCaps")
       , isStrike = checkOnOff ns rPr (elemName ns "w" "strike")
       , isRTL = checkOnOff ns rPr (elemName ns "w" "rtl")
+      , isForceCTL = checkOnOff ns rPr (elemName ns "w" "cs")
       , rVertAlign =
            findChildByName ns "w" "vertAlign" rPr >>=
            findAttrByName ns "w" "val" >>=
@@ -271,7 +284,7 @@ elemToRunStyle _ _ _ = defaultRunStyle
 getHeaderLevel :: NameSpaces -> Element -> Maybe (ParaStyleName, Int)
 getHeaderLevel ns element
   | Just styleName <- getElementStyleName ns element
-  , Just n <- stringToInteger . T.unpack =<<
+  , Just n <- stringToInteger =<<
               (T.stripPrefix "heading " . T.toLower $
                 fromStyleName styleName)
   , n > 0 = Just (styleName, fromInteger n)
@@ -279,8 +292,8 @@ getHeaderLevel _ _ = Nothing
 
 getElementStyleName :: Coercible T.Text a => NameSpaces -> Element -> Maybe a
 getElementStyleName ns el = coerce <$>
-  ((findChildByName ns "w" "name" el >>= findAttrTextByName ns "w" "val")
-  <|> findAttrTextByName ns "w" "styleId" el)
+  ((findChildByName ns "w" "name" el >>= findAttrByName ns "w" "val")
+  <|> findAttrByName ns "w" "styleId" el)
 
 getNumInfo :: NameSpaces -> Element -> Maybe (T.Text, T.Text)
 getNumInfo ns element = do
@@ -288,15 +301,15 @@ getNumInfo ns element = do
               findChildByName ns "w" "numPr"
       lvl = fromMaybe "0" (numPr >>=
                            findChildByName ns "w" "ilvl" >>=
-                           findAttrTextByName ns "w" "val")
+                           findAttrByName ns "w" "val")
   numId <- numPr >>=
            findChildByName ns "w" "numId" >>=
-           findAttrTextByName ns "w" "val"
+           findAttrByName ns "w" "val"
   return (numId, lvl)
 
 elemToParStyleData :: NameSpaces -> Element -> Maybe ParStyle -> Maybe ParStyle
 elemToParStyleData ns element parentStyle
-  | Just styleId <- findAttrTextByName ns "w" "styleId" element
+  | Just styleId <- findAttrByName ns "w" "styleId" element
   , Just styleName <- getElementStyleName ns element
   = Just $ ParStyle
       {

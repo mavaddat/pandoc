@@ -1,8 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Tests.Readers.Txt2Tags
-   Copyright   : © 2014-2020 John MacFarlane,
+   Copyright   : © 2014-2021 John MacFarlane,
                  © 2014 Matthew Pickering
    License     : GNU GPL, version 2 or above
 
@@ -14,7 +13,6 @@ Tests for the Txt2Tags reader.
 -}
 module Tests.Readers.Txt2Tags (tests) where
 
-import Prelude
 import Data.List (intersperse)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -54,7 +52,7 @@ simpleTable'' spec headers rows
           (TableFoot nullAttr [])
   where
     toRow = Row nullAttr . map simpleCell
-    toHeaderRow l = if null l then [] else [toRow l]
+    toHeaderRow l = [toRow l | not (null l)]
 
 tests :: [TestTree]
 tests =

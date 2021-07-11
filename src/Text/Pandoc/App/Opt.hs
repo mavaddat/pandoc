@@ -4,9 +4,10 @@
 {-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE FlexibleContexts    #-}
 {- |
    Module      : Text.Pandoc.App.Opt
-   Copyright   : Copyright (C) 2006-2020 John MacFarlane
+   Copyright   : Copyright (C) 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley@edu>
@@ -19,27 +20,40 @@ module Text.Pandoc.App.Opt (
             Opt(..)
           , LineEnding (..)
           , IpynbOutput (..)
+          , DefaultsState (..)
           , defaultOpts
-          , addMeta
+          , applyDefaults
+          , fullDefaultsPath
           ) where
+import Control.Monad.Except (MonadIO, liftIO, throwError, (>=>), foldM)
+import Control.Monad.State.Strict (StateT, modify, gets)
+import System.FilePath ( addExtension, (</>), takeExtension, takeDirectory )
+import System.Directory ( canonicalizePath )
 import Data.Char (isLower, toLower)
+import Data.Maybe (fromMaybe)
 import GHC.Generics hiding (Meta)
-import Text.Pandoc.Builder (setMeta)
 import Text.Pandoc.Filter (Filter (..))
-import Text.Pandoc.Logging (Verbosity (WARNING))
+import Text.Pandoc.Logging (Verbosity (WARNING), LogMessage(..))
 import Text.Pandoc.Options (TopLevelDivision (TopLevelDefault),
                             TrackChanges (AcceptChanges),
                             WrapOption (WrapAuto), HTMLMathMethod (PlainMath),
                             ReferenceLocation (EndOfDocument),
                             ObfuscationMethod (NoObfuscation),
                             CiteMethod (Citeproc))
-import Text.Pandoc.Shared (camelCaseStrToHyphenated)
-import Text.DocLayout (render)
-import Text.DocTemplates (Context(..), Val(..))
+import Text.Pandoc.Class (readFileLazy, fileExists, setVerbosity, report,
+                          PandocMonad(lookupEnv), getUserDataDir)
+import Text.Pandoc.Error (PandocError (PandocParseError, PandocSomeError))
+import Text.Pandoc.Shared (camelCaseStrToHyphenated, defaultUserDataDir,
+                           findM, ordNub)
+import qualified Text.Pandoc.Parsing as P
+import Text.Pandoc.Readers.Metadata (yamlMap)
+import Text.Pandoc.Class.PandocPure
+import Text.DocTemplates (Context(..))
 import Data.Text (Text, unpack)
+import Data.Default (def)
 import qualified Data.Text as T
 import qualified Data.Map as M
-import Text.Pandoc.Definition (Meta(..), MetaValue(..), lookupMeta)
+import Text.Pandoc.Definition (Meta(..), MetaValue(..))
 import Data.Aeson (defaultOptions, Options(..))
 import Data.Aeson.TH (deriveJSON)
 import Control.Applicative ((<|>))
@@ -143,19 +157,194 @@ data Opt = Opt
     , optNoCheckCertificate    :: Bool       -- ^ Disable certificate validation
     , optEol                   :: LineEnding -- ^ Style of line-endings to use
     , optStripComments         :: Bool       -- ^ Skip HTML comments
+    , optCSL                   :: Maybe FilePath -- ^ CSL stylesheet
+    , optBibliography          :: [FilePath]  -- ^ Bibliography files
+    , optCitationAbbreviations :: Maybe FilePath -- ^ Citation abbreviations
     } deriving (Generic, Show)
 
 instance FromYAML (Opt -> Opt) where
-  parseYAML (Mapping _ _ m) =
-    foldr (.) id <$> mapM doOpt (M.toList m)
+  parseYAML (Mapping _ _ m) = chain doOpt (M.toList m)
   parseYAML n = failAtNode n "Expected a mapping"
+
+data DefaultsState = DefaultsState
+    {
+      curDefaults      :: Maybe FilePath -- currently parsed file
+    , inheritanceGraph :: [[FilePath]]   -- defaults file inheritance graph
+    } deriving (Show)
+
+instance (PandocMonad m, MonadIO m)
+      => FromYAML (Opt -> StateT DefaultsState m Opt) where
+  parseYAML (Mapping _ _ m) = do
+    let opts = M.mapKeys toText m
+    dataDir <- case M.lookup "data-dir" opts of
+      Nothing -> return Nothing
+      Just v -> Just . unpack <$> parseYAML v
+    f <- parseOptions (M.toList m)
+    case M.lookup "defaults" opts of
+      Just v -> do
+        g <- parseDefaults v dataDir
+        return  $ g >=> f >=> resolveVarsInOpt
+      Nothing -> return $ f >=> resolveVarsInOpt
+    where
+      toText (Scalar _ (SStr s)) = s
+      toText _ = ""
+  parseYAML n = failAtNode n "Expected a mapping"
+
+resolveVarsInOpt :: forall m. (PandocMonad m, MonadIO m)
+                 => Opt -> StateT DefaultsState m Opt
+resolveVarsInOpt
+    opt@Opt
+    { optTemplate              = oTemplate
+    , optMetadataFiles         = oMetadataFiles
+    , optOutputFile            = oOutputFile
+    , optInputFiles            = oInputFiles
+    , optSyntaxDefinitions     = oSyntaxDefinitions
+    , optAbbreviations         = oAbbreviations
+    , optReferenceDoc          = oReferenceDoc
+    , optEpubMetadata          = oEpubMetadata
+    , optEpubFonts             = oEpubFonts
+    , optEpubCoverImage        = oEpubCoverImage
+    , optLogFile               = oLogFile
+    , optFilters               = oFilters
+    , optDataDir               = oDataDir
+    , optExtractMedia          = oExtractMedia
+    , optCss                   = oCss
+    , optIncludeBeforeBody     = oIncludeBeforeBody
+    , optIncludeAfterBody      = oIncludeAfterBody
+    , optIncludeInHeader       = oIncludeInHeader
+    , optResourcePath          = oResourcePath
+    , optCSL                   = oCSL
+    , optBibliography          = oBibliography
+    , optCitationAbbreviations = oCitationAbbreviations
+    }
+  = do
+      oTemplate' <- mapM resolveVars oTemplate
+      oMetadataFiles' <- mapM resolveVars oMetadataFiles
+      oOutputFile' <- mapM resolveVars oOutputFile
+      oInputFiles' <- mapM (mapM resolveVars) oInputFiles
+      oSyntaxDefinitions' <- mapM resolveVars oSyntaxDefinitions
+      oAbbreviations' <- mapM resolveVars oAbbreviations
+      oReferenceDoc' <- mapM resolveVars oReferenceDoc
+      oEpubMetadata' <- mapM resolveVars oEpubMetadata
+      oEpubFonts' <- mapM resolveVars oEpubFonts
+      oEpubCoverImage' <- mapM resolveVars oEpubCoverImage
+      oLogFile' <- mapM resolveVars oLogFile
+      oFilters' <- mapM resolveVarsInFilter oFilters
+      oDataDir' <- mapM resolveVars oDataDir
+      oExtractMedia' <- mapM resolveVars oExtractMedia
+      oCss' <- mapM resolveVars oCss
+      oIncludeBeforeBody' <- mapM resolveVars oIncludeBeforeBody
+      oIncludeAfterBody' <- mapM resolveVars oIncludeAfterBody
+      oIncludeInHeader' <- mapM resolveVars oIncludeInHeader
+      oResourcePath' <- mapM resolveVars oResourcePath
+      oCSL' <- mapM resolveVars oCSL
+      oBibliography' <- mapM resolveVars oBibliography
+      oCitationAbbreviations' <- mapM resolveVars oCitationAbbreviations
+      return opt{ optTemplate              = oTemplate'
+                , optMetadataFiles         = oMetadataFiles'
+                , optOutputFile            = oOutputFile'
+                , optInputFiles            = oInputFiles'
+                , optSyntaxDefinitions     = oSyntaxDefinitions'
+                , optAbbreviations         = oAbbreviations'
+                , optReferenceDoc          = oReferenceDoc'
+                , optEpubMetadata          = oEpubMetadata'
+                , optEpubFonts             = oEpubFonts'
+                , optEpubCoverImage        = oEpubCoverImage'
+                , optLogFile               = oLogFile'
+                , optFilters               = oFilters'
+                , optDataDir               = oDataDir'
+                , optExtractMedia          = oExtractMedia'
+                , optCss                   = oCss'
+                , optIncludeBeforeBody     = oIncludeBeforeBody'
+                , optIncludeAfterBody      = oIncludeAfterBody'
+                , optIncludeInHeader       = oIncludeInHeader'
+                , optResourcePath          = oResourcePath'
+                , optCSL                   = oCSL'
+                , optBibliography          = oBibliography'
+                , optCitationAbbreviations = oCitationAbbreviations'
+                }
+
+ where
+  resolveVars :: FilePath -> StateT DefaultsState m FilePath
+  resolveVars [] = return []
+  resolveVars ('$':'{':xs) =
+    let (ys, zs) = break (=='}') xs
+     in if null zs
+           then return $ '$':'{':xs
+           else do
+             val <- lookupEnv' ys
+             (val ++) <$> resolveVars (drop 1 zs)
+  resolveVars (c:cs) = (c:) <$> resolveVars cs
+  lookupEnv' :: String -> StateT DefaultsState m String
+  lookupEnv' "." = do
+    mbCurDefaults <- gets curDefaults
+    maybe (return "")
+          (fmap takeDirectory . liftIO . canonicalizePath)
+          mbCurDefaults
+  lookupEnv' "USERDATA" = do
+    mbodatadir <- mapM resolveVars oDataDir
+    mbdatadir  <- getUserDataDir
+    defdatadir <- liftIO defaultUserDataDir
+    return $ fromMaybe defdatadir (mbodatadir <|> mbdatadir)
+  lookupEnv' v = do
+    mbval <- fmap T.unpack <$> lookupEnv (T.pack v)
+    case mbval of
+      Nothing -> do
+        report $ EnvironmentVariableUndefined (T.pack v)
+        return mempty
+      Just x  -> return x
+  resolveVarsInFilter (JSONFilter fp) =
+    JSONFilter <$> resolveVars fp
+  resolveVarsInFilter (LuaFilter fp) =
+    LuaFilter <$> resolveVars fp
+  resolveVarsInFilter CiteprocFilter = return CiteprocFilter
+
+
+
+parseDefaults :: (PandocMonad m, MonadIO m)
+              => Node Pos
+              -> Maybe FilePath
+              -> Parser (Opt -> StateT DefaultsState m Opt)
+parseDefaults n dataDir = parseDefsNames n >>= \ds -> return $ \o -> do
+  -- get parent defaults:
+  defsParent <- gets $ fromMaybe "" . curDefaults
+  -- get child defaults:
+  defsChildren <- mapM (fullDefaultsPath dataDir) ds
+  -- expand parent in defaults inheritance graph by children:
+  defsGraph <- gets inheritanceGraph
+  let defsGraphExp = expand defsGraph defsChildren defsParent
+  modify $ \defsState -> defsState{ inheritanceGraph = defsGraphExp }
+  -- check for cyclic inheritance:
+  if cyclic defsGraphExp
+    then throwError $
+      PandocSomeError $ T.pack $
+        "Error: Circular defaults file reference in " ++
+        "'" ++ defsParent ++ "'"
+    else foldM applyDefaults o defsChildren
+  where parseDefsNames x = (parseYAML x >>= \xs -> return $ map unpack xs)
+                       <|> (parseYAML x >>= \x' -> return [unpack x'])
+
+parseOptions :: Monad m
+             => [(Node Pos, Node Pos)]
+             -> Parser (Opt -> StateT DefaultsState m Opt)
+parseOptions ns = do
+  f <- chain doOpt' ns
+  return $ return . f
+
+chain :: Monad m => (a -> m (b -> b)) -> [a] -> m (b -> b)
+chain f = foldM g id
+  where g o n = f n >>= \o' -> return $ o' . o
+
+doOpt' :: (Node Pos, Node Pos) -> Parser (Opt -> Opt)
+doOpt' (k',v) = do
+  k <- parseStringKey k'
+  case k of
+    "defaults" -> return id
+    _ -> doOpt (k',v)
 
 doOpt :: (Node Pos, Node Pos) -> Parser (Opt -> Opt)
 doOpt (k',v) = do
-  k <- case k' of
-         Scalar _ (SStr t) -> return t
-         Scalar _ _ -> failAtNode k' "Non-string key"
-         _ -> failAtNode k' "Non-scalar key"
+  k <- parseStringKey k'
   case k of
     "tab-stop" ->
       parseYAML v >>= \x -> return (\o -> o{ optTabStop = x })
@@ -185,8 +374,7 @@ doOpt (k',v) = do
       -- Note: x comes first because <> for Context is left-biased union
       -- and we want to favor later default files. See #5988.
     "metadata" ->
-      parseYAML v >>= \x -> return (\o -> o{ optMetadata = optMetadata o <>
-                                               contextToMeta x })
+      yamlToMeta v >>= \x -> return (\o -> o{ optMetadata = optMetadata o <> x })
     "metadata-files" ->
       parseYAML v >>= \x ->
                         return (\o -> o{ optMetadataFiles =
@@ -291,6 +479,11 @@ doOpt (k',v) = do
       parseYAML v >>= \x -> return (\o -> o{ optColumns = x })
     "filters" ->
       parseYAML v >>= \x -> return (\o -> o{ optFilters = optFilters o <> x })
+    "citeproc" ->
+      parseYAML v >>= \x ->
+        if x
+           then return (\o -> o{ optFilters = CiteprocFilter : optFilters o })
+           else return id
     "email-obfuscation" ->
       parseYAML v >>= \x -> return (\o -> o{ optEmailObfuscation = x })
     "identifier-prefix" ->
@@ -322,6 +515,12 @@ doOpt (k',v) = do
       parseYAML v >>= \x -> return (\o -> o{ optSlideLevel = x })
     "atx-headers" ->
       parseYAML v >>= \x -> return (\o -> o{ optSetextHeaders = not x })
+    "markdown-headings" ->
+      parseYAML v >>= \x -> return (\o ->
+        case T.toLower x of
+          "atx"    -> o{ optSetextHeaders = False }
+          "setext" -> o{ optSetextHeaders = True }
+          _        -> o)
     "ascii" ->
       parseYAML v >>= \x -> return (\o -> o{ optAscii = x })
     "default-image-extension" ->
@@ -344,21 +543,18 @@ doOpt (k',v) = do
       (parseYAML v >>= \x -> return (\o -> o{ optCss = optCss o <>
                                                 [unpack x] }))
     "bibliography" ->
-      do let addItem x o = o{ optMetadata =
-                                 addMeta "bibliography" (T.unpack x)
-                                    (optMetadata o) }
-         (parseYAML v >>= \(xs :: [Text]) -> return $ \o ->
-                                                    foldr addItem o xs)
-          <|>
-          (parseYAML v >>= \(x :: Text) -> return $ \o -> addItem x o)
+      (parseYAML v >>= \x -> return (\o ->
+                               o{ optBibliography = optBibliography o <>
+                                                      map unpack x }))
+      <|>
+      (parseYAML v >>= \x -> return (\o ->
+                               o{ optBibliography = optBibliography o <>
+                                                       [unpack x] }))
     "csl" ->
-      do let addItem x o = o{ optMetadata =
-                                 addMeta "csl" (T.unpack x)
-                                   (optMetadata o) }
-         (parseYAML v >>= \(xs :: [Text]) -> return $ \o ->
-                                                    foldr addItem o xs)
-          <|>
-          (parseYAML v >>= \(x :: Text) -> return $ \o -> addItem x o)
+      parseYAML v >>= \x -> return (\o -> o{ optCSL = unpack <$> x })
+    "citation-abbreviations" ->
+      parseYAML v >>= \x -> return (\o -> o{ optCitationAbbreviations =
+                                                  unpack <$> x })
     "ipynb-output" ->
       parseYAML v >>= \x -> return (\o -> o{ optIpynbOutput = x })
     "include-before-body" ->
@@ -387,7 +583,8 @@ doOpt (k',v) = do
                                 optIncludeInHeader o <> [unpack x] }))
     "resource-path" ->
       parseYAML v >>= \x ->
-             return (\o -> o{ optResourcePath = map unpack x })
+             return (\o -> o{ optResourcePath = map unpack x <>
+                                 optResourcePath o })
     "request-headers" ->
       parseYAML v >>= \x ->
              return (\o -> o{ optRequestHeaders = x })
@@ -456,7 +653,7 @@ defaultOpts = Opt
     , optPdfEngine             = Nothing
     , optPdfEngineOpts         = []
     , optSlideLevel            = Nothing
-    , optSetextHeaders         = True
+    , optSetextHeaders         = False
     , optAscii                 = False
     , optDefaultImageExtension = ""
     , optExtractMedia          = Nothing
@@ -473,40 +670,70 @@ defaultOpts = Opt
     , optNoCheckCertificate    = False
     , optEol                   = Native
     , optStripComments         = False
+    , optCSL                   = Nothing
+    , optBibliography          = []
+    , optCitationAbbreviations = Nothing
     }
 
-contextToMeta :: Context Text -> Meta
-contextToMeta (Context m) =
-  Meta . M.map valToMetaVal $ m
+parseStringKey ::  Node Pos -> Parser Text
+parseStringKey k = case k of
+  Scalar _ (SStr t) -> return t
+  Scalar _ _ -> failAtNode k "Non-string key"
+  _ -> failAtNode k "Non-scalar key"
 
-valToMetaVal :: Val Text -> MetaValue
-valToMetaVal (MapVal (Context m)) =
-  MetaMap . M.map valToMetaVal $ m
-valToMetaVal (ListVal xs) = MetaList $ map valToMetaVal xs
-valToMetaVal (SimpleVal d) = MetaString $ render Nothing d
-valToMetaVal NullVal = MetaString ""
+yamlToMeta :: Node Pos -> Parser Meta
+yamlToMeta (Mapping _ _ m) =
+    either (fail . show) return $ runEverything (yamlMap pMetaString m)
+  where
+    pMetaString = pure . MetaString <$> P.manyChar P.anyChar
+    runEverything p =
+      runPure (P.readWithM p (def :: P.ParserState) ("" :: Text))
+      >>= fmap (Meta . flip P.runF def)
+yamlToMeta _ = return mempty
 
-addMeta :: String -> String -> Meta -> Meta
-addMeta k v meta =
-  case lookupMeta k' meta of
-       Nothing -> setMeta k' v' meta
-       Just (MetaList xs) ->
-                  setMeta k' (MetaList (xs ++ [v'])) meta
-       Just x  -> setMeta k' (MetaList [x, v']) meta
- where
-  v' = readMetaValue v
-  k' = T.pack k
+-- | Apply defaults from --defaults file.
+applyDefaults :: (PandocMonad m, MonadIO m)
+              => Opt
+              -> FilePath
+              -> StateT DefaultsState m Opt
+applyDefaults opt file = do
+  setVerbosity $ optVerbosity opt
+  modify $ \defsState -> defsState{ curDefaults = Just file }
+  inp <- readFileLazy file
+  case decode1 inp of
+      Right f -> f opt
+      Left (errpos, errmsg)  -> throwError $
+         PandocParseError $ T.pack $
+         "Error parsing " ++ file ++ " line " ++
+          show (posLine errpos) ++ " column " ++
+          show (posColumn errpos) ++ ":\n" ++ errmsg
 
-readMetaValue :: String -> MetaValue
-readMetaValue s
-  | s == "true"  = MetaBool True
-  | s == "True"  = MetaBool True
-  | s == "TRUE"  = MetaBool True
-  | s == "false" = MetaBool False
-  | s == "False" = MetaBool False
-  | s == "FALSE" = MetaBool False
-  | otherwise    = MetaString $ T.pack s
+fullDefaultsPath :: (PandocMonad m, MonadIO m)
+                 => Maybe FilePath
+                 -> FilePath
+                 -> m FilePath
+fullDefaultsPath dataDir file = do
+  let fp = if null (takeExtension file)
+              then addExtension file "yaml"
+              else file
+  defaultDataDir <- liftIO defaultUserDataDir
+  let defaultFp = fromMaybe defaultDataDir dataDir </> "defaults" </> fp
+  fromMaybe fp <$> findM fileExists [fp, defaultFp]
 
+-- | In a list of lists, append another list in front of every list which
+-- starts with specific element.
+expand :: Ord a => [[a]] -> [a] -> a -> [[a]]
+expand [] ns n = fmap (\x -> x : [n]) ns
+expand ps ns n = concatMap (ext n ns) ps
+  where
+    ext x xs p = case p of
+      (l : _) | x == l -> fmap (: p) xs
+      _ -> [p]
+
+cyclic :: Ord a => [[a]] -> Bool
+cyclic = any hasDuplicate
+  where
+    hasDuplicate xs = length (ordNub xs) /= length xs
 
 -- see https://github.com/jgm/pandoc/pull/4083
 -- using generic deriving caused long compilation times

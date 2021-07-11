@@ -32,7 +32,7 @@ Starting with version 2.0, pandoc makes it possible to write
 filters in Lua without any external dependencies at all. A Lua
 interpreter (version 5.3) and a Lua library for creating pandoc
 filters is built into the pandoc executable. Pandoc data types
-are marshalled to Lua directly, avoiding the overhead of writing
+are marshaled to Lua directly, avoiding the overhead of writing
 JSON to stdout and reading it from stdin.
 
 Here is an example of a Lua filter that converts strong emphasis
@@ -75,7 +75,7 @@ Python (`smallcaps.py`):
   `pandoc --lua-filter ./smallcaps.lua`   1.03s
 
 As you can see, the Lua filter avoids the substantial overhead
-associated with marshalling to and from JSON over a pipe.
+associated with marshaling to and from JSON over a pipe.
 
 # Lua filter structure
 
@@ -109,7 +109,7 @@ element filtering function. In other words, filter entries will
 be called for each corresponding element in the document,
 getting the respective element as input.
 
-The return of a filter function must one of the following:
+The return of a filter function must be one of the following:
 
 -   nil: this means that the object should remain unchanged.
 -   a pandoc object: this must be of the same type as the input
@@ -138,7 +138,7 @@ elements.
 
 ## Filters on element sequences
 
-For some filtering tasks, the it is necessary to know the order
+For some filtering tasks, it is necessary to know the order
 in which elements occur in the document. It is not enough then to
 inspect a single element at a time.
 
@@ -292,7 +292,7 @@ use-case would be to load additional modules, or even to alter
 default modules.
 
 The following snippet is an example of code that might be useful
-when added to `init.lua`. The snippet adds all unicode-aware
+when added to `init.lua`. The snippet adds all Unicode-aware
 functions defined in the [`text` module](#module-text) to the
 default `string` module, prefixed with the string `uc_`.
 
@@ -304,6 +304,29 @@ end
 
 This makes it possible to apply these functions on strings using
 colon syntax (`mystring:uc_upper()`).
+
+# Debugging Lua filters
+
+It is possible to use a debugging interface to halt execution and
+step through a Lua filter line by line as it is run inside Pandoc.
+This is accomplished using the remote-debugging interface of the
+package [`mobdebug`](https://github.com/pkulchenko/MobDebug).
+Although mobdebug can be run from the terminal, it is more useful
+run within the donation-ware Lua editor and IDE,
+[ZeroBrane](https://studio.zerobrane.com/). ZeroBrane offers a
+REPL console and UI to step-through and view all variables and
+state.
+
+If you already have Lua 5.3 installed, you can add
+[`mobdebug`](https://luarocks.org/modules/paulclinger/mobdebug)
+and its dependency
+[`luasocket`](https://luarocks.org/modules/luasocket/luasocket)
+using [`luarocks`](https://luarocks.org), which should then be
+available on the path. ZeroBrane also includes both of these in
+its package, so if you don't want to install Lua separately, you
+should add/modify your `LUA_PATH` and `LUA_CPATH` to include the
+correct locations; [see detailed instructions
+here](https://studio.zerobrane.com/doc-remote-debugging).
 
 # Examples
 
@@ -362,48 +385,14 @@ end
 ## Setting the date in the metadata
 
 This filter sets the date in the document's metadata to the
-current date:
+current date, if a date isn't already set:
 
 ``` lua
 function Meta(m)
-  m.date = os.date("%B %e, %Y")
-  return m
-end
-```
-
-## Extracting information about links
-
-This filter prints a table of all the URLs linked to in the
-document, together with the number of links to that URL.
-
-``` lua
-links = {}
-
-function Link (el)
-  if links[el.target] then
-    links[el.target] = links[el.target] + 1
-  else
-    links[el.target] = 1
+  if m.date == nil then
+    m.date = os.date("%B %e, %Y")
+    return m
   end
-  return el
-end
-
-function Doc (blocks, meta)
-  function strCell(str)
-    return {pandoc.Plain{pandoc.Str(str)}}
-  end
-  local caption = {pandoc.Str "Link", pandoc.Space(), pandoc.Str "count"}
-  local aligns = {pandoc.AlignDefault, pandoc.AlignLeft}
-  local widths = {0.8, 0.2}
-  local headers = {strCell "Target", strCell "Count"}
-  local rows = {}
-  for link, count in pairs(links) do
-    rows[#rows + 1] = {strCell(link), strCell(count)}
-  end
-  return pandoc.Doc(
-    {pandoc.Table(caption, aligns, widths, headers, rows)},
-    meta
-  )
 end
 ```
 
@@ -1104,21 +1093,33 @@ Values of this type can be created with the
 
 Fields:
 
+`attr`
+:   table attributes ([Attr])
+
 `caption`
-:   table caption ([List] of [Inlines])
+:   table caption ([Caption])
 
-`aligns`
-:   column alignments ([List] of [Alignment]s)
+`colspecs`
+:   column specifications, i.e., alignments and widths ([List] of
+    [ColSpec]s)
 
-`widths`
-:   column widths (number)
+`head`
+:   table head ([TableHead])
 
-`headers`
-:   header row ([List] of [table cells](#type-table-cell))
+`bodies`
+:   table bodies ([List] of [TableBody]s)
 
-`rows`
-:   table rows ([List] of [List]s of [table
-    cells](#type-table-cell))
+`foot`
+:   table foot ([TableFoot])
+
+`identifier`
+:   alias for `attr.identifier` (string)
+
+`classes`
+:   alias for `attr.classes` ([List] of strings)
+
+`attributes`
+:   alias for `attr.attributes` ([Attributes])
 
 `tag`, `t`
 :   the literal `Table` (string)
@@ -1127,7 +1128,7 @@ A [table cell]{#type-table-cell} is a list of blocks.
 
 *[Alignment]{#type-alignment}* is a string value indicating the
 horizontal alignment of a table column. `AlignLeft`,
-`AlignRight`, and `AlignCenter` leads cell content tob be
+`AlignRight`, and `AlignCenter` leads cell content to be
 left-aligned, right-aligned, and centered, respectively. The
 default alignment is `AlignDefault` (often equivalent to
 centered).
@@ -1258,6 +1259,9 @@ Fields:
 
 `target`
 :   the link target (string)
+
+`title`
+:   brief link description
 
 `identifier`
 :   alias for `attr.identifier` (string)
@@ -1484,6 +1488,22 @@ Fields:
 `tag`, `t`
 :   the literal `Superscript` (string)
 
+### Underline {#type-underline}
+
+Underlined text
+
+Values of this type can be created with the
+[`pandoc.Underline`](#pandoc.underline) constructor.
+
+Fields:
+
+`content`
+:   inline content ([List] of [Inlines])
+
+`tag`, `t`
+:   the literal `Underline` (string)
+
+
 ## Element components
 
 ### Attr {#type-attr}
@@ -1493,7 +1513,7 @@ with the [`pandoc.Attr`](#pandoc.attr) constructor. For
 convenience, it is usually not necessary to construct the value
 directly if it is part of an element, and it is sufficient to
 pass an HTML-like table. E.g., to create a span with identifier
-"text" and classes "a" and "b", on can write:
+"text" and classes "a" and "b", one can write:
 
     local span = pandoc.Span('text', {id = 'text', class = 'a b'})
 
@@ -1519,6 +1539,41 @@ Fields:
 
 List of key/value pairs. Values can be accessed by using keys as
 indices to the list table.
+
+### Caption {#type-caption}
+
+The caption of a table, with an optional short caption.
+
+Fields:
+
+`long`
+:   long caption (list of [Blocks])
+
+`short`
+:   short caption (list of [Inlines])
+
+### Cell {#type-cell}
+
+A table cell.
+
+Fields:
+
+`attr`
+:   cell attributes
+
+`alignment`
+:   individual cell alignment ([Alignment]).
+
+`contents`
+:   cell contents (list of [Blocks]).
+
+`col_span`
+:   number of columns occupied by the cell; the height of the cell
+    (integer).
+
+`row_span`
+:   number of rows occupied by the cell; the height of the cell
+    (integer).
 
 ### Citation {#type-citation}
 
@@ -1550,6 +1605,17 @@ Fields:
 `hash`
 :   hash (integer)
 
+### ColSpec {#type-colspec}
+
+Column alignment and width specification for a single table
+column.
+
+This is a pair with the following components:
+
+1. cell alignment ([Alignment]).
+2. table column width, as a fraction of the total table width
+   (number).
+
 ### ListAttributes {#type-listattributes}
 
 List attributes
@@ -1572,6 +1638,53 @@ Fields:
 `delimiter`
 :   delimiter of list numbers; one of `DefaultDelim`, `Period`,
     `OneParen`, and `TwoParens` (string)
+
+### Row {#type-row}
+
+A table row.
+
+Tuple fields:
+
+1. row attributes
+2. row cells (list of [Cells])
+
+### TableBody {#type-tablebody}
+
+A body of a table, with an intermediate head and the specified
+number of row header columns.
+
+Fields:
+
+`attr`
+:   table body attributes ([Attr])
+
+`body`
+:   table body rows (list of [Rows])
+
+`head`
+:   intermediate head (list of [Rows])
+
+`row_head_columns`
+:   number of columns taken up by the row head of each row of a
+    [TableBody]. The row body takes up the remaining columns.
+
+### TableFoot {#type-tablefoot}
+
+The foot of a table.
+
+This is a pair with the following components:
+
+1. attributes
+2. foot rows ([Rows])
+
+### TableHead {#type-tablehead}
+
+The head of a table.
+
+This is a pair with the following components:
+
+1. attributes
+2. head rows ([Rows])
 
 ## ReaderOptions {#type-readeroptions}
 
@@ -1656,7 +1769,7 @@ A list is any Lua table with integer indices. Indices start at
 one, so if `alist = {'value'}` then `alist[1] == 'value'`.
 
 Lists, when part of an element, or when generated during
-marshalling, are made instances of the `pandoc.List` type for
+marshaling, are made instances of the `pandoc.List` type for
 convenience. The `pandoc.List` type is defined in the
 [*pandoc.List*](#module-pandoc.list) module. See there for
 available methods.
@@ -1669,6 +1782,36 @@ table into a List.
 
 A pandoc log message. Objects have no fields, but can be
 converted to a string via `tostring`.
+
+## SimpleTable {#type-simpletable}
+
+A simple table is a table structure which resembles the old (pre
+pandoc 2.10) Table type. Bi-directional conversion from and to
+[Tables](#type-table) is possible with the
+[`pandoc.utils.to_simple_table`](#pandoc.utils.to_simple_table)
+and
+[`pandoc.utils.from_simple_table`](#pandoc.utils.from_simple_table)
+function, respectively. Instances of this type can also be created
+directly with the [`pandoc.SimpleTable`](#pandoc.simpletable)
+constructor.
+
+Fields:
+
+`caption`:
+:   [List] of [Inlines]
+
+`aligns`:
+:   column alignments ([List] of [Alignments](#type-alignment))
+
+`widths`:
+:   column widths; a  ([List] of numbers)
+
+`headers`:
+:   table header row ([List] of lists of [Blocks])
+
+`rows`:
+:   table rows ([List] of rows, where a row is a list of lists of
+    [Blocks])
 
 ## Version {#type-version}
 
@@ -1723,8 +1866,11 @@ Usage:
 [Attributes]: #type-attributes
 [Block]: #type-block
 [Blocks]: #type-block
+[Caption]: #type-caption
+[Cells]: #type-cell
 [Citation]: #type-citation
 [Citations]: #type-citation
+[ColSpec]: #type-colspec
 [CommonState]: #type-commonstate
 [Image]: #type-image
 [Inline]: #type-inline
@@ -1738,6 +1884,12 @@ Usage:
 [LogMessage]: #type-logmessage
 [Pandoc]: #type-pandoc
 [Para]: #type-para
+[Rows]: #type-row
+[SimpleTable]: #type-simpletable
+[Table]: #type-table
+[TableBody]: #type-tablebody
+[TableFoot]: #type-tablefoot
+[TableHead]: #type-tablehead
 [Version]: #type-version
 [`pandoc.utils.equals`]: #pandoc.utils.equals
 
@@ -2044,26 +2196,29 @@ format, and functions to filter and modify a subtree.
 
     Returns: [RawBlock](#type-rawblock) object
 
-[`Table (caption, aligns, widths, headers, rows)`]{#pandoc.table}
+[`Table (caption, colspecs, head, bodies, foot[, attr])`]{#pandoc.table}
 
 :   Creates a table element.
 
     Parameters:
 
     `caption`:
-    :   table caption
+    :   table [caption](#type-caption)
 
-    `aligns`:
-    :   alignments
+    `colspecs`:
+    :   column alignments and widths (list of [ColSpec](#type-colspec)s)
 
-    `widths`:
-    :   column widths
+    `head`:
+    :   [table head](#type-tablehead)
 
-    `headers`:
-    :   header row
+    `bodies`:
+    :   [table bodies](#type-tablebody)
 
-    `rows`:
-    :   table rows
+    `foot`:
+    :   [table foot](#type-tablefoot)
+
+    `attr`:
+    :   element attributes
 
     Returns: [Table](#type-table) object
 
@@ -2099,7 +2254,7 @@ format, and functions to filter and modify a subtree.
 
 [`Emph (content)`]{#pandoc.emph}
 
-:   Creates an inline element representing emphasised text.
+:   Creates an inline element representing emphasized text.
 
     Parameters:
 
@@ -2302,7 +2457,7 @@ format, and functions to filter and modify a subtree.
 
 [`Strikeout (content)`]{#pandoc.strikeout}
 
-:   Creates text which is striked out.
+:   Creates text which is struck out.
 
     Parameters:
 
@@ -2344,6 +2499,17 @@ format, and functions to filter and modify a subtree.
     :   inline content
 
     Returns: [Superscript](#type-superscript) object
+
+[`Underline (content)`]{#pandoc.underline}
+
+:   Creates an Underline inline element
+
+    Parameters:
+
+    `content`:
+    :   inline content
+
+    Returns: [Underline](#type-underline) object
 
 ## Element components
 
@@ -2406,6 +2572,52 @@ format, and functions to filter and modify a subtree.
     :   delimiter of list numbers
 
     Returns: [ListAttributes](#type-listattributes) object
+
+## Legacy types
+
+[`SimpleTable (caption, aligns, widths, headers, rows)`]{#pandoc.simpletable}
+
+:   Creates a simple table resembling the old (pre pandoc 2.10)
+    table type.
+
+    Parameters:
+
+    `caption`:
+    :   [List] of [Inlines]
+
+    `aligns`:
+    :   column alignments ([List] of [Alignments](#type-alignment))
+
+    `widths`:
+    :   column widths; a  ([List] of numbers)
+
+    `headers`:
+    :   table header row ([List] of lists of [Blocks])
+
+    `rows`:
+    :   table rows ([List] of rows, where a row is a list of lists
+        of [Blocks])
+
+    Returns: [SimpleTable] object
+
+    Usage:
+
+        local caption = "Overview"
+        local aligns = {pandoc.AlignDefault, pandoc.AlignDefault}
+        local widths = {0, 0} -- let pandoc determine col widths
+        local headers = {{pandoc.Plain({pandoc.Str "Language"})},
+                         {pandoc.Plain({pandoc.Str "Typing"})}}
+        local rows = {
+          {{pandoc.Plain "Haskell"}, {pandoc.Plain "static"}},
+          {{pandoc.Plain "Lua"}, {pandoc.Plain "Dynamic"}},
+        }
+        simple_table = pandoc.SimpleTable(
+          caption,
+          aligns,
+          widths,
+          headers,
+          rows
+        )
 
 ## Constants
 
@@ -2531,9 +2743,21 @@ format, and functions to filter and modify a subtree.
 Runs command with arguments, passing it some input, and returns
 the output.
 
+Parameters:
+
+`command`
+:   program to run; the executable will be resolved using default
+    system methods (string).
+
+`args`
+:   list of arguments to pass to the program (list of strings).
+
+`input`
+:   data which is piped into the program via stdin (string).
+
 Returns:
 
--   Output of command.
+-   Output of command, i.e. data printed to stdout (string)
 
 Raises:
 
@@ -2669,11 +2893,31 @@ Returns:
 
 -   Whether the two objects represent the same element (boolean)
 
+### from\_simple\_table {#pandoc.utils.from_simple_table}
+
+`from_simple_table (table)`
+
+Creates a [Table] block element from a [SimpleTable]. This is
+useful for dealing with legacy code which was written for pandoc
+versions older than 2.10.
+
+Returns:
+
+-   table block element ([Table])
+
+Usage:
+
+    local simple = pandoc.SimpleTable(table)
+    -- modify, using pre pandoc 2.10 methods
+    simple.caption = pandoc.SmallCaps(simple.caption)
+    -- create normal table block again
+    table = pandoc.utils.from_simple_table(simple)
+
 ### make\_sections {#pandoc.utils.make_sections}
 
 `make_sections (number_sections, base_level, blocks)`
 
-Converst list of [Blocks](#type-block) into sections.
+Converts list of [Blocks](#type-block) into sections.
 `Div`s will be created beginning at each `Header`
 and containing following content until the next `Header`
 of comparable level.  If `number_sections` is true,
@@ -2788,6 +3032,24 @@ Usage:
     local pandoc_birth_year = to_roman_numeral(2006)
     -- pandoc_birth_year == 'MMVI'
 
+### to\_simple\_table {#pandoc.utils.to_simple_table}
+
+`to_simple_table (table)`
+
+Creates a [SimpleTable] out of a [Table] block.
+
+Returns:
+
+-   a simple table object ([SimpleTable])
+
+Usage:
+
+    local simple = pandoc.utils.to_simple_table(table)
+    -- modify, using pre pandoc 2.10 methods
+    simple.caption = pandoc.SmallCaps(simple.caption)
+    -- create normal table block again
+    table = pandoc.utils.from_simple_table(simple)
+
 # Module pandoc.mediabag
 
 The `pandoc.mediabag` module allows accessing pandoc's media
@@ -2822,7 +3084,8 @@ Clear-out the media bag, deleting all items.
 
 `insert (filepath, mime_type, contents)`
 
-Adds a new entry to pandoc's media bag.
+Adds a new entry to pandoc's media bag. Replaces any existing
+mediabag entry with the same `filepath`.
 
 Parameters:
 
@@ -2830,7 +3093,7 @@ Parameters:
 :   filename and path relative to the output folder.
 
 `mime_type`:
-:   the file's MIME type
+:   the file's MIME type; use `nil` if unknown or unavailable.
 
 `contents`:
 :   the binary contents of the file.
@@ -2914,11 +3177,21 @@ Usage:
 
 ### fetch {#pandoc.mediabag.fetch}
 
-`fetch (source, base_url)`
+`fetch (source)`
 
 Fetches the given source from a URL or local file. Returns two
 values: the contents of the file and the MIME type (or an empty
 string).
+
+The function will first try to retrieve `source` from the
+mediabag; if that fails, it will try to download it or read it
+from the local file system while respecting pandoc's "resource
+path" setting.
+
+Parameters:
+
+`source`:
+:   path to a resource; either a local file path or URI
 
 Returns:
 
@@ -2928,11 +3201,11 @@ Returns:
 Usage:
 
     local diagram_url = "https://pandoc.org/diagram.jpg"
-    local mt, contents = pandoc.mediabag.fetch(diagram_url, ".")
+    local mt, contents = pandoc.mediabag.fetch(diagram_url)
 
 # Module pandoc.List
 
-The this module defines pandoc's list type. It comes with useful
+This module defines pandoc's list type. It comes with useful
 methods and convenience functions.
 
 ## Constructor
@@ -3035,7 +3308,7 @@ methods and convenience functions.
 [`pandoc.List:insert ([pos], value)`]{#pandoc.list:insert}
 
 :   Inserts element `value` at position `pos` in list, shifting
-    elements to the next-greater indix if necessary.
+    elements to the next-greater index if necessary.
 
     This function is identical to
     [`table.insert`](https://www.lua.org/manual/5.3/manual.html#6.6).
@@ -3082,7 +3355,7 @@ methods and convenience functions.
     Parameters:
 
     `pos`:
-    :   position of the list value that will be remove; defaults
+    :   position of the list value that will be removed; defaults
         to the index of the last element
 
     Returns: the removed element
@@ -3113,6 +3386,181 @@ methods and convenience functions.
 
     `comp`:
     :   Comparison function as described above.
+
+# Module pandoc.path
+
+Module for file path manipulations.
+
+## Static Fields {#pandoc.path-fields}
+
+### separator {#pandoc.path.separator}
+
+The character that separates directories.
+
+### search_path_separator {#pandoc.path.search_path_separator}
+
+The character that is used to separate the entries in the `PATH`
+environment variable.
+
+## Functions {#pandoc.path-functions}
+
+### directory (filepath) {#pandoc.path.directory}
+
+Gets the directory name, i.e., removes the last directory
+separator and everything after from the given path.
+
+Parameters:
+
+filepath
+:   path (string)
+
+Returns:
+
+-   The filepath up to the last directory separator. (string)
+
+### filename (filepath) {#pandoc.path.filename}
+
+Get the file name.
+
+Parameters:
+
+filepath
+:   path (string)
+
+Returns:
+
+-   File name part of the input path. (string)
+
+### is_absolute (filepath) {#pandoc.path.is_absolute}
+
+Checks whether a path is absolute, i.e. not fixed to a root.
+
+Parameters:
+
+filepath
+:   path (string)
+
+Returns:
+
+-   `true` iff `filepath` is an absolute path, `false` otherwise.
+    (boolean)
+
+### is_relative (filepath) {#pandoc.path.is_relative}
+
+Checks whether a path is relative or fixed to a root.
+
+Parameters:
+
+filepath
+:   path (string)
+
+Returns:
+
+-   `true` iff `filepath` is a relative path, `false` otherwise.
+    (boolean)
+
+### join (filepaths) {#pandoc.path.join}
+
+Join path elements back together by the directory separator.
+
+Parameters:
+
+filepaths
+:   path components (list of strings)
+
+Returns:
+
+-   The joined path. (string)
+
+### make_relative (path, root[, unsafe]) {#pandoc.path.make_relative}
+
+Contract a filename, based on a relative path. Note that the
+resulting path will usually not introduce `..` paths, as the
+presence of symlinks means `../b` may not reach `a/b` if it starts
+from `a/c`. For a worked example see [this blog
+post](https://neilmitchell.blogspot.co.uk/2015/10/filepaths-are-subtle-symlinks-are-hard.html).
+
+Set `unsafe` to a truthy value to a allow `..` in paths.
+
+Parameters:
+
+path
+:   path to be made relative (string)
+
+root
+:   root path (string)
+
+unsafe
+:   whether to allow `..` in the result. (boolean)
+
+Returns:
+
+-   contracted filename (string)
+
+### normalize (filepath) {#pandoc.path.normalize}
+
+Normalizes a path.
+
+-   `//` makes sense only as part of a (Windows) network drive;
+    elsewhere, multiple slashes are reduced to a single
+    `path.separator` (platform dependent).
+-   `/` becomes `path.separator` (platform dependent)
+-   `./` -\> ''
+-   an empty path becomes `.`
+
+Parameters:
+
+filepath
+:   path (string)
+
+Returns:
+
+-   The normalized path. (string)
+
+### split (filepath) {#pandoc.path.split}
+
+Splits a path by the directory separator.
+
+Parameters:
+
+filepath
+:   path (string)
+
+Returns:
+
+-   List of all path components. (list of strings)
+
+### split_extension (filepath) {#pandoc.path.split_extension}
+
+Splits the last extension from a file path and returns the parts. The
+extension, if present, includes the leading separator; if the path has
+no extension, then the empty string is returned as the extension.
+
+Parameters:
+
+filepath
+:   path (string)
+
+Returns:
+
+-   filepath without extension (string)
+
+-   extension or empty string (string)
+
+### split_search_path (search_path) {#pandoc.path.split_search_path}
+
+Takes a string and splits it on the `search_path_separator` character.
+Blank items are ignored on Windows, and converted to `.` on Posix. On
+Windows path elements are stripped of quotes.
+
+Parameters:
+
+search_path
+:   platform-specific search path (string)
+
+Returns:
+
+-   list of directories in search path (list of strings)
 
 # Module pandoc.system
 

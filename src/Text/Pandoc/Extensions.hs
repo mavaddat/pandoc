@@ -6,7 +6,7 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {- |
    Module      : Text.Pandoc.Extensions
-   Copyright   : Copyright (C) 2012-2020 John MacFarlane
+   Copyright   : Copyright (C) 2012-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -34,6 +34,7 @@ module Text.Pandoc.Extensions ( Extension(..)
 where
 import Data.Bits (clearBit, setBit, testBit, (.|.))
 import Data.Data (Data)
+import Data.List (foldl')
 import qualified Data.Text as T
 import Data.Typeable (Typeable)
 import GHC.Generics (Generic)
@@ -88,6 +89,7 @@ data Extension =
                                   --   does not affect readers/writers directly; it causes
                                   --   the eastAsianLineBreakFilter to be applied after
                                   --   parsing, in Text.Pandoc.App.convertWithOpts.
+    | Ext_element_citations   -- ^ Use element-citation elements for JATS citations
     | Ext_emoji               -- ^ Support emoji like :smile:
     | Ext_empty_paragraphs -- ^ Allow empty paragraphs
     | Ext_epub_html_exts      -- ^ Recognise the EPUB extended version of HTML
@@ -133,6 +135,9 @@ data Extension =
     | Ext_raw_attribute           -- ^ Allow explicit raw blocks/inlines
     | Ext_raw_html            -- ^ Allow raw HTML
     | Ext_raw_tex             -- ^ Allow raw TeX (other than math)
+    | Ext_raw_markdown        -- ^ Parse markdown in ipynb as raw markdown
+    | Ext_rebase_relative_paths -- ^ Rebase relative image and link paths,
+                                -- relative to directory of containing file
     | Ext_shortcut_reference_links -- ^ Shortcut reference links
     | Ext_simple_tables       -- ^ Pandoc-style simple tables
     | Ext_smart               -- ^ "Smart" quotes, apostrophes, ellipses, dashes
@@ -148,8 +153,12 @@ data Extension =
     | Ext_tex_math_dollars    -- ^ TeX math between $..$ or $$..$$
     | Ext_tex_math_double_backslash  -- ^ TeX math btw \\(..\\) \\[..\\]
     | Ext_tex_math_single_backslash  -- ^ TeX math btw \(..\) \[..\]
+    | Ext_xrefs_name          -- ^ Use xrefs with names
+    | Ext_xrefs_number        -- ^ Use xrefs with numbers
     | Ext_yaml_metadata_block -- ^ YAML metadata block
     | Ext_gutenberg           -- ^ Use Project Gutenberg conventions for plain
+    | Ext_attributes          -- ^ Generic attribute syntax
+    | Ext_sourcepos           -- ^ Include source position attributes
     deriving (Show, Read, Enum, Eq, Ord, Bounded, Data, Typeable, Generic)
 
 -- | Extensions to be used with pandoc-flavored markdown.
@@ -242,21 +251,17 @@ phpMarkdownExtraExtensions = extensionsFromList
 -- | Extensions to be used with github-flavored markdown.
 githubMarkdownExtensions :: Extensions
 githubMarkdownExtensions = extensionsFromList
-  [ Ext_all_symbols_escapable
-  , Ext_pipe_tables
+  [ Ext_pipe_tables
   , Ext_raw_html
-  , Ext_fenced_code_blocks
+  , Ext_native_divs
   , Ext_auto_identifiers
   , Ext_gfm_auto_identifiers
-  , Ext_backtick_code_blocks
   , Ext_autolink_bare_uris
-  , Ext_space_in_atx_header
-  , Ext_intraword_underscores
   , Ext_strikeout
   , Ext_task_lists
   , Ext_emoji
-  , Ext_lists_without_preceding_blankline
-  , Ext_shortcut_reference_links
+  , Ext_fenced_code_blocks
+  , Ext_backtick_code_blocks
   ]
 
 -- | Extensions to be used with multimarkdown.
@@ -308,7 +313,16 @@ getDefaultExtensions :: T.Text -> Extensions
 getDefaultExtensions "markdown_strict"   = strictExtensions
 getDefaultExtensions "markdown_phpextra" = phpMarkdownExtraExtensions
 getDefaultExtensions "markdown_mmd"      = multimarkdownExtensions
-getDefaultExtensions "markdown_github"   = githubMarkdownExtensions
+getDefaultExtensions "markdown_github"   = githubMarkdownExtensions <>
+  extensionsFromList
+    [ Ext_all_symbols_escapable
+    , Ext_backtick_code_blocks
+    , Ext_fenced_code_blocks
+    , Ext_space_in_atx_header
+    , Ext_intraword_underscores
+    , Ext_lists_without_preceding_blankline
+    , Ext_shortcut_reference_links
+    ]
 getDefaultExtensions "markdown"          = pandocExtensions
 getDefaultExtensions "ipynb"             =
   extensionsFromList
@@ -332,11 +346,47 @@ getDefaultExtensions "muse"            = extensionsFromList
                                            [Ext_amuse,
                                             Ext_auto_identifiers]
 getDefaultExtensions "plain"           = plainExtensions
-getDefaultExtensions "gfm"             = githubMarkdownExtensions
+getDefaultExtensions "gfm"             = extensionsFromList
+  [ Ext_pipe_tables
+  , Ext_raw_html
+  , Ext_native_divs
+  , Ext_auto_identifiers
+  , Ext_gfm_auto_identifiers
+  , Ext_autolink_bare_uris
+  , Ext_strikeout
+  , Ext_task_lists
+  , Ext_emoji
+  , Ext_yaml_metadata_block
+  ]
 getDefaultExtensions "commonmark"      = extensionsFromList
                                           [Ext_raw_html]
+getDefaultExtensions "commonmark_x"    = extensionsFromList
+  [ Ext_pipe_tables
+  , Ext_raw_html
+  , Ext_gfm_auto_identifiers
+  , Ext_strikeout
+  , Ext_task_lists
+  , Ext_emoji
+  , Ext_pipe_tables
+  , Ext_raw_html
+  , Ext_raw_tex            -- only supported in writer (for math)
+  , Ext_smart
+  , Ext_tex_math_dollars
+  , Ext_superscript
+  , Ext_subscript
+  , Ext_definition_lists
+  , Ext_footnotes
+  , Ext_fancy_lists
+  , Ext_fenced_divs
+  , Ext_bracketed_spans
+  , Ext_raw_attribute
+  , Ext_implicit_header_references
+  , Ext_attributes
+  , Ext_yaml_metadata_block
+  ]
 getDefaultExtensions "org"             = extensionsFromList
                                           [Ext_citations,
+                                           Ext_task_lists,
                                            Ext_auto_identifiers]
 getDefaultExtensions "html"            = extensionsFromList
                                           [Ext_auto_identifiers,
@@ -368,6 +418,11 @@ getDefaultExtensions "textile"         = extensionsFromList
                                            Ext_smart,
                                            Ext_raw_html,
                                            Ext_auto_identifiers]
+getDefaultExtensions "jats"            = extensionsFromList
+                                          [Ext_auto_identifiers]
+getDefaultExtensions "jats_archiving"  = getDefaultExtensions "jats"
+getDefaultExtensions "jats_publishing" = getDefaultExtensions "jats"
+getDefaultExtensions "jats_articleauthoring" = getDefaultExtensions "jats"
 getDefaultExtensions "opml"            = pandocExtensions -- affects notes
 getDefaultExtensions _                 = extensionsFromList
                                           [Ext_auto_identifiers]
@@ -409,20 +464,24 @@ getAllExtensions f = universalExtensions <> getAll f
        , Ext_gutenberg
        , Ext_smart
        , Ext_literate_haskell
+       , Ext_rebase_relative_paths
        ]
   getAll "markdown_strict"   = allMarkdownExtensions
   getAll "markdown_phpextra" = allMarkdownExtensions
   getAll "markdown_mmd"      = allMarkdownExtensions
   getAll "markdown_github"   = allMarkdownExtensions
   getAll "markdown"          = allMarkdownExtensions
-  getAll "ipynb"             = allMarkdownExtensions
-  getAll "docx"            = extensionsFromList
+  getAll "ipynb"             = allMarkdownExtensions <> extensionsFromList
+    [ Ext_raw_markdown ]
+  getAll "docx"            = autoIdExtensions <> extensionsFromList
     [ Ext_empty_paragraphs
     , Ext_styles
     ]
   getAll "opendocument"    = extensionsFromList
     [ Ext_empty_paragraphs
     , Ext_native_numbering
+    , Ext_xrefs_name
+    , Ext_xrefs_number
     ]
   getAll "odt"             = getAll "opendocument" <> autoIdExtensions
   getAll "muse"            = autoIdExtensions <>
@@ -430,20 +489,42 @@ getAllExtensions f = universalExtensions <> getAll f
     [ Ext_amuse ]
   getAll "asciidoc"        = autoIdExtensions
   getAll "plain"           = allMarkdownExtensions
-  getAll "gfm"             = githubMarkdownExtensions <>
-    autoIdExtensions <>
+  getAll "gfm"             = getAll "commonmark"
+  getAll "commonmark"      =
     extensionsFromList
-    [ Ext_raw_html
+    [ Ext_gfm_auto_identifiers
+    , Ext_ascii_identifiers
+    , Ext_pipe_tables
+    , Ext_autolink_bare_uris
+    , Ext_strikeout
+    , Ext_task_lists
+    , Ext_emoji
+    , Ext_raw_html
     , Ext_raw_tex            -- only supported in writer (for math)
     , Ext_implicit_figures
     , Ext_hard_line_breaks
     , Ext_smart
+    , Ext_tex_math_dollars
+    , Ext_superscript
+    , Ext_subscript
+    , Ext_definition_lists
+    , Ext_footnotes
+    , Ext_fancy_lists
+    , Ext_fenced_divs
+    , Ext_bracketed_spans
+    , Ext_raw_attribute
+    , Ext_implicit_header_references
+    , Ext_attributes
+    , Ext_sourcepos
+    , Ext_yaml_metadata_block
+    , Ext_rebase_relative_paths
     ]
-  getAll "commonmark"      = getAll "gfm"
+  getAll "commonmark_x"    = getAll "commonmark"
   getAll "org"             = autoIdExtensions <>
     extensionsFromList
     [ Ext_citations
     , Ext_smart
+    , Ext_task_lists
     ]
   getAll "html"            = autoIdExtensions <>
     extensionsFromList
@@ -487,6 +568,14 @@ getAllExtensions f = universalExtensions <> getAll f
     , Ext_smart
     , Ext_raw_tex
     ]
+  getAll "jats"            =
+    extensionsFromList
+    [ Ext_auto_identifiers
+    , Ext_element_citations
+    ]
+  getAll "jats_archiving"  = getAll "jats"
+  getAll "jats_publishing" = getAll "jats"
+  getAll "jats_articleauthoring" = getAll "jats"
   getAll "opml"            = allMarkdownExtensions -- affects notes
   getAll "twiki"           = autoIdExtensions <>
     extensionsFromList
@@ -512,7 +601,7 @@ parseFormatSpec :: T.Text
 parseFormatSpec = parse formatSpec ""
   where formatSpec = do
           name <- formatName
-          (extsToEnable, extsToDisable) <- foldl (flip ($)) ([],[]) <$>
+          (extsToEnable, extsToDisable) <- foldl' (flip ($)) ([],[]) <$>
                                              many extMod
           return (T.pack name, reverse extsToEnable, reverse extsToDisable)
         formatName = many1 $ noneOf "-+"

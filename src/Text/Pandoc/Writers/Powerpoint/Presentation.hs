@@ -45,6 +45,7 @@ module Text.Pandoc.Writers.Powerpoint.Presentation ( documentToPresentation
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.List (intercalate)
+import Data.List.NonEmpty (nonEmpty)
 import Data.Default
 import Text.Pandoc.Definition
 import Text.Pandoc.ImageSize
@@ -363,16 +364,11 @@ inlineToParElems (Note blks) = do
     then return []
     else do
     notes <- gets stNoteIds
-    let maxNoteId = case M.keys notes of
-          [] -> 0
-          lst -> maximum lst
+    let maxNoteId = maybe 0 maximum $ nonEmpty $ M.keys notes
         curNoteId = maxNoteId + 1
     modify $ \st -> st { stNoteIds = M.insert curNoteId blks notes }
     local (\env -> env{envRunProps = (envRunProps env){rLink = Just $ InternalTarget endNotesSlideId}}) $
       inlineToParElems $ Superscript [Str $ tshow curNoteId]
-inlineToParElems (Span (_, ["underline"], _) ils) =
-  local (\r -> r{envRunProps = (envRunProps r){rPropUnderline=True}}) $
-  inlinesToParElems ils
 inlineToParElems (Span _ ils) = inlinesToParElems ils
 inlineToParElems (Quoted quoteType ils) =
   inlinesToParElems $ [Str open] ++ ils ++ [Str close]
@@ -540,10 +536,10 @@ withAttr _ sp = sp
 blockToShape :: Block -> Pres Shape
 blockToShape (Plain ils) = blockToShape (Para ils)
 blockToShape (Para (il:_))  | Image attr ils (url, _) <- il =
-      (withAttr attr . Pic def (T.unpack url)) <$> inlinesToParElems ils
+      withAttr attr . Pic def (T.unpack url) <$> inlinesToParElems ils
 blockToShape (Para (il:_))  | Link _ (il':_) target <- il
                             , Image attr ils (url, _) <- il' =
-      (withAttr attr . Pic def{picPropLink = Just $ ExternalTarget target} (T.unpack url))
+      withAttr attr . Pic def{picPropLink = Just $ ExternalTarget target} (T.unpack url)
       <$> inlinesToParElems ils
 blockToShape (Table _ blkCapt specs thead tbody tfoot) = do
   let (caption, algn, _, hdrCells, rows) = toLegacyTable blkCapt specs thead tbody tfoot
@@ -724,7 +720,7 @@ makeNoteEntry (n, blks) =
   let enum = Str (tshow n <> ".")
   in
     case blks of
-      (Para ils : blks') -> (Para $ enum : Space : ils) : blks'
+      (Para ils : blks') -> Para (enum : Space : ils) : blks'
       _ -> Para [enum] : blks
 
 forceFontSize :: Pixels -> Pres a -> Pres a
@@ -770,7 +766,7 @@ getMetaSlide  = do
          mempty
 
 addSpeakerNotesToMetaSlide :: Slide -> [Block] -> Pres (Slide, [Block])
-addSpeakerNotesToMetaSlide (Slide sldId layout@(MetadataSlide{}) spkNotes) blks =
+addSpeakerNotesToMetaSlide (Slide sldId layout@MetadataSlide{} spkNotes) blks =
   do let (ntsBlks, blks') = span isNotesDiv blks
      spkNotes' <- mconcat <$> mapM blockToSpeakerNotes ntsBlks
      return (Slide sldId layout (spkNotes <> spkNotes'), blks')

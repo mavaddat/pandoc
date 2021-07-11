@@ -29,26 +29,27 @@ import Text.Pandoc.Definition
 import Text.Pandoc.Error (PandocError (PandocParsecError))
 import Text.Pandoc.Options
 import Text.Pandoc.Parsing hiding (enclosed, nested)
-import Text.Pandoc.Shared (crFilter, trim, stringify, tshow)
+import Text.Pandoc.Shared (trim, stringify, tshow)
 
 -- | Read DokuWiki from an input string and return a Pandoc document.
-readDokuWiki :: PandocMonad m
+readDokuWiki :: (PandocMonad m, ToSources a)
              => ReaderOptions
-             -> Text
+             -> a
              -> m Pandoc
 readDokuWiki opts s = do
-  let input = crFilter s
-  res <- runParserT parseDokuWiki def {stateOptions = opts } "source" input
+  let sources = toSources s
+  res <- runParserT parseDokuWiki def {stateOptions = opts }
+           (initialSourceName sources) sources
   case res of
-       Left e  -> throwError $ PandocParsecError input e
+       Left e  -> throwError $ PandocParsecError sources e
        Right d -> return d
 
-type DWParser = ParserT Text ParserState
+type DWParser = ParserT Sources ParserState
 
 -- * Utility functions
 
 -- | Parse end-of-line, which can be either a newline or end-of-file.
-eol :: Stream s m Char => ParserT s st m ()
+eol :: (Stream s m Char, UpdateSourcePos s Char) => ParserT s st m ()
 eol = void newline <|> eof
 
 nested :: PandocMonad m => DWParser m a -> DWParser m a
@@ -317,7 +318,7 @@ interwikiToUrl "wpes" page = "https://es.wikipedia.org/wiki/" <> page
 interwikiToUrl "wpfr" page = "https://fr.wikipedia.org/wiki/" <> page
 interwikiToUrl "wpjp" page = "https://jp.wikipedia.org/wiki/" <> page
 interwikiToUrl "wppl" page = "https://pl.wikipedia.org/wiki/" <> page
-interwikiToUrl _ page = "https://www.google.com/search?q=" <> page <> "&btnI=lucky"
+interwikiToUrl unknown page = unknown <> ">" <> page
 
 linkText :: PandocMonad m => DWParser m B.Inlines
 linkText = parseLink fromRaw "[[" "]]"
@@ -472,7 +473,7 @@ table = do
                             else ([], rows)
   let attrs = (AlignDefault, ColWidthDefault) <$ transpose rows
   let toRow = Row nullAttr . map B.simpleCell
-      toHeaderRow l = if null l then [] else [toRow l]
+      toHeaderRow l = [toRow l | not (null l)]
   pure $ B.table B.emptyCaption
                  attrs
                  (TableHead nullAttr $ toHeaderRow headerRow)

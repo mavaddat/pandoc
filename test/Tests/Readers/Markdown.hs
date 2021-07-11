@@ -1,8 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Tests.Readers.Markdown
-   Copyright   : © 2006-2020 John MacFarlane
+   Copyright   : © 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -13,7 +12,6 @@ Tests for the Markdown reader.
 -}
 module Tests.Readers.Markdown (tests) where
 
-import Prelude
 import Data.Text (Text, unpack)
 import qualified Data.Text as T
 import Test.Tasty
@@ -360,7 +358,7 @@ tests = [ testGroup "inline code"
               para (text "The value of the " <> math "x" <> text "\8217s and the systems\8217 condition.")
           , test markdownSmart "unclosed double quote"
             ("**this should \"be bold**"
-            =?> para (strong "this should \"be bold"))
+            =?> para (strong "this should \8220be bold"))
           ]
         , testGroup "footnotes"
           [ "indent followed by newline and flush-left text" =:
@@ -376,8 +374,8 @@ tests = [ testGroup "inline code"
         , testGroup "lhs"
           [ test (purely $ readMarkdown def{ readerExtensions = enableExtension
                        Ext_literate_haskell pandocExtensions })
-              "inverse bird tracks and html" $
-              "> a\n\n< b\n\n<div>\n"
+              "inverse bird tracks and html"
+              $ ("> a\n\n< b\n\n<div>\n" :: Text)
               =?> codeBlockWith ("",["haskell","literate"],[]) "a"
                   <>
                   codeBlockWith ("",["haskell"],[]) "b"
@@ -471,7 +469,7 @@ tests = [ testGroup "inline code"
                         , citationPrefix  = []
                         , citationSuffix  = []
                         , citationMode    = AuthorInText
-                        , citationNoteNum = 0
+                        , citationNoteNum = 1
                         , citationHash    = 0
                         }
                 ] "@item1")
@@ -481,12 +479,12 @@ tests = [ testGroup "inline code"
                         , citationPrefix  = []
                         , citationSuffix  = []
                         , citationMode    = AuthorInText
-                        , citationNoteNum = 0
+                        , citationNoteNum = 1
                         , citationHash    = 0
                         }
                 ] "@1657:huyghens")
           ]
-        , let citation = cite [Citation "cita" [] [] AuthorInText 0 0] (str "@cita")
+        , let citation = cite [Citation "cita" [] [] AuthorInText 1 0] (str "@cita")
           in testGroup "footnote/link following citation" -- issue #2083
           [ "footnote" =:
               T.unlines [ "@cita[^note]"
@@ -523,7 +521,7 @@ tests = [ testGroup "inline code"
           , "regular citation" =:
               "@cita [foo]" =?>
               para (
-                cite [Citation "cita" [] [Str "foo"] AuthorInText 0 0]
+                cite [Citation "cita" [] [Str "foo"] AuthorInText 1 0]
                   (str "@cita" <> space <> str "[foo]")
               )
           ]

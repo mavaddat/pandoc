@@ -1,8 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Tests.Readers.Org.Block.Header
-   Copyright   : © 2014-2020 Albert Krewinkel
+   Copyright   : © 2014-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <albert@zeitkraut.de>
@@ -13,7 +12,6 @@ Test parsing of org lists.
 -}
 module Tests.Readers.Org.Block.List (tests) where
 
-import Prelude
 import Test.Tasty (TestTree)
 import Tests.Helpers ((=?>))
 import Tests.Readers.Org.Shared ((=:), spcSep)
@@ -119,6 +117,19 @@ tests =
                 , "- "
                 ] =?>
       bulletList [ plain "", plain "" ]
+
+  , "Task list" =:
+    T.unlines [ "- [ ] nope"
+              , "- [X] yup"
+              , "- [-] started"
+              , "  1. [X] sure"
+              , "  2. [ ] nuh-uh"
+              ] =?>
+    bulletList [ plain "☐ nope", plain "☒ yup"
+               , mconcat [ plain "☐ started"
+                         , orderedList [plain "☒ sure", plain "☐ nuh-uh"]
+                         ]
+               ]
 
   , "Simple Ordered List" =:
       ("1. Item1\n" <>

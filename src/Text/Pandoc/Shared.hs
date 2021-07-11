@@ -8,7 +8,7 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {- |
    Module      : Text.Pandoc.Shared
-   Copyright   : Copyright (C) 2006-2020 John MacFarlane
+   Copyright   : Copyright (C) 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -21,18 +21,11 @@ module Text.Pandoc.Shared (
                      -- * List processing
                      splitBy,
                      splitTextBy,
-                     splitByIndices,
-                     splitStringByIndices,
                      splitTextByIndices,
-                     substitute,
                      ordNub,
                      findM,
                      -- * Text processing
-                     ToString (..),
-                     ToText (..),
                      tshow,
-                     backslashEscapes,
-                     escapeStringUsing,
                      elemText,
                      notElemText,
                      stripTrailingNewlines,
@@ -70,10 +63,10 @@ module Text.Pandoc.Shared (
                      isTightList,
                      taskListItemFromAscii,
                      taskListItemToAscii,
+                     handleTaskListItem,
                      addMetaField,
                      makeMeta,
                      eastAsianLineBreakFilter,
-                     underlineSpan,
                      htmlSpanLikeElements,
                      splitSentences,
                      filterIpynbOutput,
@@ -98,7 +91,7 @@ module Text.Pandoc.Shared (
                      safeRead,
                      safeStrRead,
                      -- * User data directory
-                     defaultUserDataDirs,
+                     defaultUserDataDir,
                      -- * Version
                      pandocVersion
                     ) where
@@ -112,7 +105,7 @@ import qualified Data.Bifunctor as Bifunctor
 import Data.Char (isAlpha, isLower, isSpace, isUpper, toLower, isAlphaNum,
                   generalCategory, GeneralCategory(NonSpacingMark,
                   SpacingCombiningMark, EnclosingMark, ConnectorPunctuation))
-import Data.List (find, intercalate, intersperse, stripPrefix, sortOn)
+import Data.List (find, intercalate, intersperse, sortOn, foldl')
 import qualified Data.Map as M
 import Data.Maybe (mapMaybe, fromMaybe)
 import Data.Monoid (Any (..))
@@ -130,7 +123,7 @@ import Text.HTML.TagSoup (RenderOptions (..), Tag (..), renderOptions,
 import Text.Pandoc.Builder (Blocks, Inlines, ToMetaValue (..))
 import qualified Text.Pandoc.Builder as B
 import Data.Time
-import Text.Pandoc.Asciify (toAsciiChar)
+import Text.Pandoc.Asciify (toAsciiText)
 import Text.Pandoc.Definition
 import Text.Pandoc.Extensions (Extensions, Extension(..), extensionEnabled)
 import Text.Pandoc.Generic (bottomUp)
@@ -150,45 +143,30 @@ splitBy :: (a -> Bool) -> [a] -> [[a]]
 splitBy _ [] = []
 splitBy isSep lst =
   let (first, rest) = break isSep lst
-      rest'         = dropWhile isSep rest
-  in  first:splitBy isSep rest'
+  in  first:splitBy isSep (dropWhile isSep rest)
 
+-- | Split text by groups of one or more separator.
 splitTextBy :: (Char -> Bool) -> T.Text -> [T.Text]
 splitTextBy isSep t
   | T.null t = []
   | otherwise = let (first, rest) = T.break isSep t
-                    rest'         = T.dropWhile isSep rest
-                in  first : splitTextBy isSep rest'
-
-splitByIndices :: [Int] -> [a] -> [[a]]
-splitByIndices [] lst = [lst]
-splitByIndices (x:xs) lst = first:splitByIndices (map (\y -> y - x)  xs) rest
-  where (first, rest) = splitAt x lst
-
--- | Split string into chunks divided at specified indices.
-splitStringByIndices :: [Int] -> [Char] -> [[Char]]
-splitStringByIndices [] lst = [lst]
-splitStringByIndices (x:xs) lst =
-  let (first, rest) = splitAt' x lst in
-  first : splitStringByIndices (map (\y -> y - x) xs) rest
+                in  first : splitTextBy isSep (T.dropWhile isSep rest)
 
 splitTextByIndices :: [Int] -> T.Text -> [T.Text]
-splitTextByIndices ns = fmap T.pack . splitStringByIndices ns . T.unpack
+splitTextByIndices ns = splitTextByRelIndices (zipWith (-) ns (0:ns)) . T.unpack
+ where
+  splitTextByRelIndices [] cs = [T.pack cs]
+  splitTextByRelIndices (x:xs) cs =
+    let (first, rest) = splitAt' x cs
+     in T.pack first : splitTextByRelIndices xs rest
 
+-- Note: don't replace this with T.splitAt, which is not sensitive
+-- to character widths!
 splitAt' :: Int -> [Char] -> ([Char],[Char])
 splitAt' _ []          = ([],[])
 splitAt' n xs | n <= 0 = ([],xs)
 splitAt' n (x:xs)      = (x:ys,zs)
   where (ys,zs) = splitAt' (n - charWidth x) xs
-
--- | Replace each occurrence of one sublist in a list with another.
-substitute :: (Eq a) => [a] -> [a] -> [a] -> [a]
-substitute _ _ [] = []
-substitute [] _ xs = xs
-substitute target replacement lst@(x:xs) =
-    case stripPrefix target lst of
-      Just lst' -> replacement ++ substitute target replacement lst'
-      Nothing   -> x : substitute target replacement xs
 
 ordNub :: (Ord a) => [a] -> [a]
 ordNub l = go Set.empty l
@@ -209,37 +187,8 @@ findM p = foldr go (pure Nothing)
 -- Text processing
 --
 
-class ToString a where
-  toString :: a -> String
-
-instance ToString String where
-  toString = id
-
-instance ToString T.Text where
-  toString = T.unpack
-
-class ToText a where
-  toText :: a -> T.Text
-
-instance ToText String where
-  toText = T.pack
-
-instance ToText T.Text where
-  toText = id
-
 tshow :: Show a => a -> T.Text
 tshow = T.pack . show
-
--- | Returns an association list of backslash escapes for the
--- designated characters.
-backslashEscapes :: [Char]    -- ^ list of special characters to escape
-                 -> [(Char, T.Text)]
-backslashEscapes = map (\ch -> (ch, T.pack ['\\',ch]))
-
--- | Escape a string of characters, using an association list of
--- characters and strings.
-escapeStringUsing :: [(Char, T.Text)] -> T.Text -> T.Text
-escapeStringUsing tbl = T.concatMap $ \c -> fromMaybe (T.singleton c) $ lookup c tbl
 
 -- | @True@ exactly when the @Char@ appears in the @Text@.
 elemText :: Char -> T.Text -> Bool
@@ -253,17 +202,24 @@ notElemText c = T.all (/= c)
 stripTrailingNewlines :: T.Text -> T.Text
 stripTrailingNewlines = T.dropWhileEnd (== '\n')
 
+isWS :: Char -> Bool
+isWS ' '  = True
+isWS '\r' = True
+isWS '\n' = True
+isWS '\t' = True
+isWS _    = False
+
 -- | Remove leading and trailing space (including newlines) from string.
 trim :: T.Text -> T.Text
-trim = T.dropAround (`elemText` " \r\n\t")
+trim = T.dropAround isWS
 
 -- | Remove leading space (including newlines) from string.
 triml :: T.Text -> T.Text
-triml = T.dropWhile (`elemText` " \r\n\t")
+triml = T.dropWhile isWS
 
 -- | Remove trailing space (including newlines) from string.
 trimr :: T.Text -> T.Text
-trimr = T.dropWhileEnd (`elemText` " \r\n\t")
+trimr = T.dropWhileEnd isWS
 
 -- | Trim leading space and trailing space unless after \.
 trimMath :: T.Text -> T.Text
@@ -274,7 +230,7 @@ trimMath = triml . T.reverse . stripBeginSpace . T.reverse -- no Text.spanEnd
       | Just ('\\', _) <- T.uncons suff = T.cons (T.last pref) suff
       | otherwise = suff
       where
-        (pref, suff) = T.span (`elemText` " \t\n\r") t
+        (pref, suff) = T.span isWS t
 
 -- | Strip leading and trailing characters from string
 stripFirstAndLast :: T.Text -> T.Text
@@ -342,6 +298,7 @@ tabFilter tabStop = T.unlines . map go . T.lines
                        (tabStop - (T.length s1 `mod` tabStop)) (T.pack " ")
                        <> go (T.drop 1 s2)
 
+{-# DEPRECATED crFilter "readers filter crs automatically" #-}
 -- | Strip out DOS line endings.
 crFilter :: T.Text -> T.Text
 crFilter = T.filter (/= '\r')
@@ -483,22 +440,20 @@ plainToPara :: Block -> Block
 plainToPara (Plain ils) = Para ils
 plainToPara x = x
 
+
 -- | Like @compactify@, but acts on items of definition lists.
 compactifyDL :: [(Inlines, [Blocks])] -> [(Inlines, [Blocks])]
 compactifyDL items =
-  let defs = concatMap snd items
-  in  case reverse (concatMap B.toList defs) of
-           (Para x:xs)
-             | not (any isPara xs) ->
-                   let (t,ds) = last items
-                       lastDef = B.toList $ last ds
-                       ds' = init ds ++
-                             if null lastDef
-                                then [B.fromList lastDef]
-                                else [B.fromList $ init lastDef ++ [Plain x]]
-                    in init items ++ [(t, ds')]
-             | otherwise           -> items
-           _                       -> items
+  case reverse items of
+        ((t,ds):ys) ->
+           case reverse (map (reverse . B.toList) ds) of
+             ((Para x:xs) : zs) | not (any isPara xs) ->
+                  reverse ys ++
+                    [(t, reverse (map B.fromList zs) ++
+                         [B.fromList (reverse (Plain x:xs))])]
+             _     -> items
+        _          -> items
+
 
 -- | Combine a list of lines by adding hard linebreaks.
 combineLines :: [[Inline]] -> [Inline]
@@ -532,7 +487,7 @@ inlineListToIdentifier exts =
       | otherwise = T.dropWhile (not . isAlpha)
     filterAscii
       | extensionEnabled Ext_ascii_identifiers exts
-        = T.pack . mapMaybe toAsciiChar . T.unpack
+        = toAsciiText
       | otherwise = id
     toIdent
       | extensionEnabled Ext_gfm_auto_identifiers exts =
@@ -580,7 +535,7 @@ makeSections numbering mbBaseLevel bs =
     let kvs' = -- don't touch number if already present
                case lookup "number" kvs of
                   Nothing | numbering
-                          , not ("unnumbered" `elem` classes) ->
+                          , "unnumbered" `notElem` classes ->
                         ("number", T.intercalate "." (map tshow newnum)) : kvs
                   _ -> kvs
     let divattr = (ident, "section":classes, kvs')
@@ -626,11 +581,9 @@ headerLtEq _ _                   = False
 uniqueIdent :: Extensions -> [Inline] -> Set.Set T.Text -> T.Text
 uniqueIdent exts title' usedIdents =
   if baseIdent `Set.member` usedIdents
-     then case find (\x -> numIdent x `Set.notMember` usedIdents)
-               ([1..60000] :: [Int]) of
-            Just x  -> numIdent x
-            Nothing -> baseIdent
-            -- if we have more than 60,000, allow repeats
+     then maybe baseIdent numIdent
+          $ find (\x -> numIdent x `Set.notMember` usedIdents) ([1..60000] :: [Int])
+          -- if we have more than 60,000, allow repeats
      else baseIdent
   where
     baseIdent = case inlineListToIdentifier exts title' of
@@ -751,13 +704,6 @@ eastAsianLineBreakFilter = bottomUp go
         go xs
           = xs
 
-{-# DEPRECATED underlineSpan "Use Text.Pandoc.Builder.underline instead" #-}
--- | Builder for underline (deprecated).
--- This probably belongs in Builder.hs in pandoc-types.
--- Will be replaced once Underline is an element.
-underlineSpan :: Inlines -> Inlines
-underlineSpan = B.underline
-
 -- | Set of HTML elements that are represented as Span with a class equal as
 -- the element tag itself.
 htmlSpanLikeElements :: Set.Set T.Text
@@ -870,7 +816,7 @@ mapLeft = Bifunctor.first
 -- > collapseFilePath "parent/foo/.." ==  "parent"
 -- > collapseFilePath "/parent/foo/../../bar" ==  "/bar"
 collapseFilePath :: FilePath -> FilePath
-collapseFilePath = Posix.joinPath . reverse . foldl go [] . splitDirectories
+collapseFilePath = Posix.joinPath . reverse . foldl' go [] . splitDirectories
   where
     go rs "." = rs
     go r@(p:rs) ".." = case p of
@@ -906,7 +852,6 @@ filteredFilesFromArchive zf f =
   where
     fileAndBinary :: Archive -> FilePath -> Maybe (FilePath, BL.ByteString)
     fileAndBinary a fp = findEntryByPath fp a >>= \e -> Just (fp, fromEntry e)
-
 
 --
 -- IANA URIs
@@ -1040,12 +985,16 @@ safeStrRead s = case reads s of
 --
 
 -- | Return appropriate user data directory for platform.  We use
--- XDG_DATA_HOME (or its default value), but fall back to the
--- legacy user data directory ($HOME/.pandoc on *nix) if this is
--- missing.
-defaultUserDataDirs :: IO [FilePath]
-defaultUserDataDirs = E.catch (do
+-- XDG_DATA_HOME (or its default value), but for backwards compatibility,
+-- we fall back to the legacy user data directory ($HOME/.pandoc on *nix)
+-- if the XDG_DATA_HOME is missing and this exists.  If neither directory
+-- is present, we return the XDG data directory.
+defaultUserDataDir :: IO FilePath
+defaultUserDataDir = do
   xdgDir <- getXdgDirectory XdgData "pandoc"
   legacyDir <- getAppUserDataDirectory "pandoc"
-  return $ ordNub [xdgDir, legacyDir])
- (\(_ :: E.SomeException) -> return [])
+  xdgExists <- doesDirectoryExist xdgDir
+  legacyDirExists <- doesDirectoryExist legacyDir
+  if not xdgExists && legacyDirExists
+     then return legacyDir
+     else return xdgDir

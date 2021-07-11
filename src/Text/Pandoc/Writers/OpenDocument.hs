@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternGuards     #-}
 {-# LANGUAGE ViewPatterns      #-}
@@ -17,14 +18,15 @@ module Text.Pandoc.Writers.OpenDocument ( writeOpenDocument ) where
 import Control.Arrow ((***), (>>>))
 import Control.Monad.State.Strict hiding (when)
 import Data.Char (chr)
+import Data.Foldable (find)
 import Data.List (sortOn, sortBy, foldl')
 import qualified Data.Map as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Ord (comparing)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Text.Pandoc.BCP47 (Lang (..), parseBCP47)
+import Text.Collate.Lang (Lang (..), parseLang)
 import Text.Pandoc.Class.PandocMonad (PandocMonad, report, translateTerm,
                                       setTranslations, toLang)
 import Text.Pandoc.Definition
@@ -32,13 +34,17 @@ import qualified Text.Pandoc.Builder as B
 import Text.Pandoc.Logging
 import Text.Pandoc.Options
 import Text.DocLayout
-import Text.Pandoc.Shared (linesToPara, tshow)
+import Text.Pandoc.Shared (linesToPara, tshow, blocksToInlines)
 import Text.Pandoc.Templates (renderTemplate)
 import qualified Text.Pandoc.Translations as Term (Term(Figure, Table))
+import Text.Pandoc.Walk
 import Text.Pandoc.Writers.Math
 import Text.Pandoc.Writers.Shared
+import qualified Text.Pandoc.Writers.AnnotatedTable as Ann
 import Text.Pandoc.XML
 import Text.Printf (printf)
+import Text.Pandoc.Highlighting (highlight)
+import Skylighting
 
 -- | Auxiliary function to convert Plain block to Para.
 plainToPara :: Block -> Block
@@ -50,6 +56,11 @@ plainToPara x         = x
 --
 
 type OD m = StateT WriterState m
+
+data ReferenceType
+  = HeaderRef
+  | TableRef
+  | ImageRef
 
 data WriterState =
     WriterState { stNotes          :: [Doc Text]
@@ -66,6 +77,7 @@ data WriterState =
                 , stImageId        :: Int
                 , stTableCaptionId :: Int
                 , stImageCaptionId :: Int
+                , stIdentTypes     :: [(Text,ReferenceType)]
                 }
 
 defaultWriterState :: WriterState
@@ -83,6 +95,7 @@ defaultWriterState =
                 , stImageId        = 1
                 , stTableCaptionId = 1
                 , stImageCaptionId = 1
+                , stIdentTypes     = []
                 }
 
 when :: Bool -> Doc Text -> Doc Text
@@ -185,15 +198,23 @@ formulaStyle mt = inTags False "style:style"
                                                   ,("style:horizontal-rel", "paragraph-content")
                                                   ,("style:wrap",           "none")]
 
+inBookmarkTags :: Text -> Doc Text -> Doc Text
+inBookmarkTags ident d =
+  selfClosingTag "text:bookmark-start" [ ("text:name", ident) ]
+  <> d <>
+  selfClosingTag "text:bookmark-end" [ ("text:name", ident) ]
+
+selfClosingBookmark :: Text -> Doc Text
+selfClosingBookmark ident =
+  selfClosingTag "text:bookmark" [("text:name", ident)]
+
 inHeaderTags :: PandocMonad m => Int -> Text -> Doc Text -> OD m (Doc Text)
 inHeaderTags i ident d =
   return $ inTags False "text:h" [ ("text:style-name", "Heading_20_" <> tshow i)
                                  , ("text:outline-level", tshow i)]
          $ if T.null ident
               then d
-              else selfClosingTag "text:bookmark-start" [ ("text:name", ident) ]
-                   <> d <>
-                   selfClosingTag "text:bookmark-end" [ ("text:name", ident) ]
+              else inBookmarkTags ident d
 
 inQuotes :: QuoteType -> Doc Text -> Doc Text
 inQuotes SingleQuote s = char '\8216' <> s <> char '\8217'
@@ -216,7 +237,7 @@ handleSpaces s = case T.uncons s of
 -- | Convert Pandoc document to string in OpenDocument format.
 writeOpenDocument :: PandocMonad m => WriterOptions -> Pandoc -> m Text
 writeOpenDocument opts (Pandoc meta blocks) = do
-  let defLang = Lang "en" "US" "" []
+  let defLang = Lang "en" (Just "US") Nothing [] [] []
   lang <- case lookupMetaString "lang" meta of
             "" -> pure defLang
             s  -> fromMaybe defLang <$> toLang (Just s)
@@ -232,6 +253,12 @@ writeOpenDocument opts (Pandoc meta blocks) = do
                         meta
   ((body, metadata),s) <- flip runStateT
         defaultWriterState $ do
+           let collectInlineIdent (Image (ident,_,_) _ _) = [(ident,ImageRef)]
+               collectInlineIdent _                       = []
+           let collectBlockIdent (Header _ (ident,_,_) _)      = [(ident,HeaderRef)]
+               collectBlockIdent (Table (ident,_,_) _ _ _ _ _) = [(ident,TableRef)]
+               collectBlockIdent _                             = []
+           modify $ \s -> s{ stIdentTypes = query collectBlockIdent blocks ++ query collectInlineIdent blocks }
            m <- metaToContext opts
                   (blocksToOpenDocument opts)
                   (fmap chomp . inlinesToOpenDocument opts)
@@ -247,6 +274,7 @@ writeOpenDocument opts (Pandoc meta blocks) = do
   let automaticStyles = vcat $ reverse $ styles ++ listStyles
   let context = defField "body" body
               . defField "toc" (writerTableOfContents opts)
+              . defField "toc-depth" (tshow $ writerTOCDepth opts)
               . defField "automatic-styles" automaticStyles
               $ metadata
   return $ render colwidth $
@@ -345,49 +373,48 @@ blocksToOpenDocument o b = vcat <$> mapM (blockToOpenDocument o) b
 
 -- | Convert a Pandoc block element to OpenDocument.
 blockToOpenDocument :: PandocMonad m => WriterOptions -> Block -> OD m (Doc Text)
-blockToOpenDocument o bs
-    | Plain          b <- bs = if null b
-                                  then return empty
-                                  else inParagraphTags =<< inlinesToOpenDocument o b
-    | Para [Image attr c (s,T.stripPrefix "fig:" -> Just t)] <- bs
-                             = figure attr c s t
-    | Para           b <- bs = if null b &&
-                                    not (isEnabled Ext_empty_paragraphs o)
-                                  then return empty
-                                  else inParagraphTags =<< inlinesToOpenDocument o b
-    | LineBlock      b <- bs = blockToOpenDocument o $ linesToPara b
-    | Div attr xs      <- bs = do
-        let (_,_,kvs) = attr
-        withLangFromAttr attr $
-          case lookup "custom-style" kvs of
-            Just sty -> withParagraphStyle o sty xs
-            _        -> blocksToOpenDocument o xs
-    | Header     i (ident,_,_) b
-                       <- bs = setFirstPara >> (inHeaderTags i ident
-                                  =<< inlinesToOpenDocument o b)
-    | BlockQuote     b <- bs = setFirstPara >> mkBlockQuote b
-    | DefinitionList b <- bs = setFirstPara >> defList b
-    | BulletList     b <- bs = setFirstPara >> bulletListToOpenDocument o b
-    | OrderedList  a b <- bs = setFirstPara >> orderedList a b
-    | CodeBlock    _ s <- bs = setFirstPara >> preformatted s
-    | Table _ bc s th tb tf
-                       <- bs = let (c, a, w, h, r) = toLegacyTable bc s th tb tf
-                               in setFirstPara >> table c a w h r
-    | HorizontalRule   <- bs = setFirstPara >> return (selfClosingTag "text:p"
-                                [ ("text:style-name", "Horizontal_20_Line") ])
-    | RawBlock f     s <- bs = if f == Format "opendocument"
-                                  then return $ text $ T.unpack s
-                                  else do
-                                    report $ BlockNotRendered bs
-                                    return empty
-    | Null             <- bs = return empty
-    | otherwise              = return empty
+blockToOpenDocument o = \case
+    Plain          b -> if null b
+                        then return empty
+                        else inParagraphTags =<< inlinesToOpenDocument o b
+    Para [Image attr c (s,T.stripPrefix "fig:" -> Just t)] -> figure attr c s t
+    Para           b -> if null b &&
+                           not (isEnabled Ext_empty_paragraphs o)
+                        then return empty
+                        else inParagraphTags =<< inlinesToOpenDocument o b
+    LineBlock      b -> blockToOpenDocument o $ linesToPara b
+    Div attr xs      -> mkDiv attr xs
+    Header     i (ident,_,_) b -> do
+      setFirstPara
+      inHeaderTags i ident =<< inlinesToOpenDocument o b
+    BlockQuote     b -> setFirstPara >> mkBlockQuote b
+    DefinitionList b -> setFirstPara >> defList b
+    BulletList     b -> setFirstPara >> bulletListToOpenDocument o b
+    OrderedList  a b -> setFirstPara >> orderedList a b
+    CodeBlock    _ s -> setFirstPara >> preformatted s
+    Table a bc s th tb tf -> setFirstPara >> table (Ann.toTable a bc s th tb tf)
+    HorizontalRule   -> setFirstPara >> return (selfClosingTag "text:p"
+                         [ ("text:style-name", "Horizontal_20_Line") ])
+    b@(RawBlock f s) -> if f == Format "opendocument"
+                        then return $ text $ T.unpack s
+                        else empty <$ report (BlockNotRendered b)
+    Null             -> return empty
     where
       defList       b = do setInDefinitionList True
                            r <- vcat  <$> mapM (deflistItemToOpenDocument o) b
                            setInDefinitionList False
                            return r
-      preformatted  s = (flush . vcat) <$> mapM (inPreformattedTags . escapeStringForXML) (T.lines s)
+      preformatted  s = flush . vcat <$> mapM (inPreformattedTags . escapeStringForXML) (T.lines s)
+      mkDiv    attr s = do
+        let (ident,_,kvs) = attr
+            i = withLangFromAttr attr $
+                case lookup "custom-style" kvs of
+                  Just sty -> withParagraphStyle o sty s
+                  _        -> blocksToOpenDocument o s
+            mkBookmarkedDiv = inTags False "text:section" [("text:name", ident)]
+        if T.null ident
+          then i
+          else fmap mkBookmarkedDiv i
       mkBlockQuote  b = do increaseIndent
                            i <- paraStyle
                                  [("style:parent-style-name","Quotations")]
@@ -395,64 +422,71 @@ blockToOpenDocument o bs
       orderedList a b = do (ln,pn) <- newOrderedListStyle (isTightList b) a
                            inTags True "text:list" [ ("text:style-name", "L" <> tshow ln)]
                                       <$> orderedListToOpenDocument o pn b
-      table c a w h r = do
+      table :: PandocMonad m => Ann.Table -> OD m (Doc Text)
+      table (Ann.Table (ident, _, _) (Caption _ c) colspecs thead tbodies _) = do
         tn <- length <$> gets stTableStyles
         pn <- length <$> gets stParaStyles
         let  genIds      = map chr [65..]
              name        = "Table" <> tshow (tn + 1)
-             columnIds   = zip genIds w
+             (aligns, mwidths) = unzip colspecs
+             fromWidth (ColWidth w) | w > 0 = w
+             fromWidth _                    = 0
+             widths = map fromWidth mwidths
+             textWidth   = sum widths
+             columnIds   = zip genIds widths
              mkColumn  n = selfClosingTag "table:table-column" [("table:style-name", name <> "." <> T.singleton (fst n))]
              columns     = map mkColumn columnIds
-             paraHStyles = paraTableStyles "Heading"  pn a
-             paraStyles  = paraTableStyles "Contents" (pn + length (newPara paraHStyles)) a
+             paraHStyles = paraTableStyles "Heading"  pn aligns
+             paraStyles  = paraTableStyles "Contents" (pn + length (newPara paraHStyles)) aligns
              newPara     = map snd . filter (not . isEmpty . snd)
-        addTableStyle $ tableStyle tn columnIds
+        addTableStyle $ tableStyle tn textWidth columnIds
         mapM_ addParaStyle . newPara $ paraHStyles ++ paraStyles
         captionDoc <- if null c
                       then return empty
-                      else inlinesToOpenDocument o c >>=
+                      else inlinesToOpenDocument o (blocksToInlines c) >>=
                              if isEnabled Ext_native_numbering o
-                                then numberedTableCaption
+                                then numberedTableCaption ident
                                 else unNumberedCaption "TableCaption"
-        th <- if all null h
-                 then return empty
-                 else colHeadsToOpenDocument o (map fst paraHStyles) h
-        tr <- mapM (tableRowToOpenDocument o (map fst paraStyles)) r
+        th <- colHeadsToOpenDocument o (map fst paraHStyles) thead
+        tr <- mapM (tableBodyToOpenDocument o (map fst paraStyles)) tbodies
         let tableDoc = inTags True "table:table" [
                             ("table:name"      , name)
                           , ("table:style-name", name)
                           ] (vcat columns $$ th $$ vcat tr)
         return $ captionDoc $$ tableDoc
-      figure attr caption source title | null caption =
+      figure attr@(ident, _, _) caption source title | null caption =
         withParagraphStyle o "Figure" [Para [Image attr caption (source,title)]]
                                   | otherwise    = do
         imageDoc <- withParagraphStyle o "FigureWithCaption" [Para [Image attr caption (source,title)]]
         captionDoc <- inlinesToOpenDocument o caption >>=
                          if isEnabled Ext_native_numbering o
-                            then numberedFigureCaption
+                            then numberedFigureCaption ident
                             else unNumberedCaption "FigureCaption"
         return $ imageDoc $$ captionDoc
 
 
-numberedTableCaption :: PandocMonad m => Doc Text -> OD m (Doc Text)
-numberedTableCaption caption = do
+numberedTableCaption :: PandocMonad m => Text -> Doc Text -> OD m (Doc Text)
+numberedTableCaption ident caption = do
     id' <- gets stTableCaptionId
     modify (\st -> st{ stTableCaptionId = id' + 1 })
     capterm <- translateTerm Term.Table
-    return $ numberedCaption "TableCaption" capterm "Table" id' caption
+    return $ numberedCaption "TableCaption" capterm "Table" id' ident caption
 
-numberedFigureCaption :: PandocMonad m => Doc Text -> OD m (Doc Text)
-numberedFigureCaption caption = do
+numberedFigureCaption :: PandocMonad m => Text -> Doc Text -> OD m (Doc Text)
+numberedFigureCaption ident caption = do
     id' <- gets stImageCaptionId
     modify (\st -> st{ stImageCaptionId = id' + 1 })
     capterm <- translateTerm Term.Figure
-    return $ numberedCaption "FigureCaption" capterm "Illustration" id' caption
+    return $ numberedCaption "FigureCaption" capterm  "Illustration" id' ident caption
 
-numberedCaption :: Text -> Text -> Text -> Int -> Doc Text -> Doc Text
-numberedCaption style term name num caption =
+numberedCaption :: Text -> Text -> Text -> Int -> Text -> Doc Text -> Doc Text
+numberedCaption style term name num ident caption =
     let t = text $ T.unpack term
         r = num - 1
-        s = inTags False "text:sequence" [ ("text:ref-name", "ref" <> name <> tshow r),
+        ident' = case ident of
+          "" -> "ref" <> name <> tshow r
+          _ -> ident
+        s = inTags False "text:sequence" [ ("text:ref-name", ident'),
                                            ("text:name", name),
                                            ("text:formula", "ooow:" <> name <> "+1"),
                                            ("style:num-format", "1") ] $ text $ show num
@@ -463,28 +497,70 @@ unNumberedCaption :: Monad m => Text -> Doc Text -> OD m (Doc Text)
 unNumberedCaption style caption = return $ inParagraphTagsWithStyle style caption
 
 colHeadsToOpenDocument :: PandocMonad m
-                       => WriterOptions -> [Text] -> [[Block]]
+                       => WriterOptions -> [Text] -> Ann.TableHead
                        -> OD m (Doc Text)
-colHeadsToOpenDocument o ns hs =
-    inTagsIndented "table:table-header-rows" . inTagsIndented "table:table-row" . vcat <$>
-    mapM (tableItemToOpenDocument o "TableHeaderRowCell") (zip ns hs)
+colHeadsToOpenDocument o ns (Ann.TableHead _ hs) =
+  case hs of
+    [] -> return empty
+    (x:_) ->
+        let (Ann.HeaderRow _ _ c) = x
+        in inTagsIndented "table:table-header-rows" .
+        inTagsIndented "table:table-row" .
+        vcat <$> mapM (tableItemToOpenDocument o "TableHeaderRowCell") (zip ns c)
+
+tableBodyToOpenDocument:: PandocMonad m
+                       => WriterOptions -> [Text] -> Ann.TableBody
+                       -> OD m (Doc Text)
+tableBodyToOpenDocument o ns tb =
+    let (Ann.TableBody _ _ _ r) = tb
+    in vcat <$> mapM (tableRowToOpenDocument o ns) r
 
 tableRowToOpenDocument :: PandocMonad m
-                       => WriterOptions -> [Text] -> [[Block]]
+                       => WriterOptions -> [Text] -> Ann.BodyRow
                        -> OD m (Doc Text)
-tableRowToOpenDocument o ns cs =
-    inTagsIndented "table:table-row" . vcat <$>
-    mapM (tableItemToOpenDocument o "TableRowCell") (zip ns cs)
+tableRowToOpenDocument o ns r =
+    let (Ann.BodyRow _ _ _ c ) = r
+    in inTagsIndented "table:table-row" . vcat <$>
+    mapM (tableItemToOpenDocument o "TableRowCell") (zip ns c)
+
+colspanAttrib :: ColSpan -> [(Text, Text)]
+colspanAttrib cs =
+  case cs of
+    ColSpan 1 -> mempty
+    ColSpan n -> [("table:number-columns-spanned", tshow n)]
+
+rowspanAttrib :: RowSpan -> [(Text, Text)]
+rowspanAttrib rs =
+  case rs of
+    RowSpan 1 -> mempty
+    RowSpan n -> [("table:number-rows-spanned", tshow n)]
+
+alignAttrib :: Alignment -> [(Text,Text)]
+alignAttrib a = case a of
+  AlignRight  -> ("fo:text-align","end") : style
+  AlignCenter -> ("fo:text-align","center") : style
+  _ -> []
+  where
+    style = [("style:justify-single-word","false")]
 
 tableItemToOpenDocument :: PandocMonad m
-                        => WriterOptions -> Text -> (Text,[Block])
+                        => WriterOptions -> Text -> (Text,Ann.Cell)
                         -> OD m (Doc Text)
-tableItemToOpenDocument o s (n,i) =
-  let a = [ ("table:style-name" , s )
-          , ("office:value-type", "string"     )
-          ]
-  in  inTags True "table:table-cell" a <$>
-      withParagraphStyle o n (map plainToPara i)
+tableItemToOpenDocument o s (n,c) = do
+  let (Ann.Cell _colspecs _colnum (Cell _ align rs cs i) ) = c
+      csa = colspanAttrib cs
+      rsa = rowspanAttrib rs
+      aa = alignAttrib align
+      a = [ ("table:style-name" , s )
+          , ("office:value-type", "string" ) ] ++ csa ++ rsa
+  itemParaStyle <- case aa of
+                     [] -> return 0
+                     _  -> paraStyleFromParent n aa
+  let itemParaStyle' = case itemParaStyle of
+                         0 -> n
+                         x -> "P" <> tshow x
+  inTags True "table:table-cell" a <$>
+    withParagraphStyle o itemParaStyle' (map plainToPara i)
 
 -- | Convert a list of inline elements to OpenDocument.
 inlinesToOpenDocument :: PandocMonad m => WriterOptions -> [Inline] -> OD m (Doc Text)
@@ -518,8 +594,8 @@ inlineToOpenDocument o ils
     SoftBreak
      | writerWrapText o == WrapPreserve
                   -> return $ preformatted "\n"
-     | otherwise  ->return space
-    Span attr xs  -> withLangFromAttr attr (inlinesToOpenDocument o xs)
+     | otherwise  -> return space
+    Span attr xs  -> mkSpan attr xs
     LineBreak     -> return $ selfClosingTag "text:line-break" []
     Str         s -> return $ handleSpaces $ escapeStringForXML s
     Emph        l -> withTextStyle Italic $ inlinesToOpenDocument o l
@@ -530,7 +606,14 @@ inlineToOpenDocument o ils
     Subscript   l -> withTextStyle Sub    $ inlinesToOpenDocument o l
     SmallCaps   l -> withTextStyle SmallC $ inlinesToOpenDocument o l
     Quoted    t l -> inQuotes t <$> inlinesToOpenDocument o l
-    Code      _ s -> inlinedCode $ preformatted s
+    Code      attrs s -> if isNothing (writerHighlightStyle o)
+      then unhighlighted s
+      else case highlight (writerSyntaxMap o)
+                  formatOpenDocument attrs s of
+                Right h  -> return $ mconcat $ mconcat h
+                Left msg -> do
+                  unless (T.null msg) $ report $ CouldNotHighlight msg
+                  unhighlighted s
     Math      t s -> lift (texMathToInlines t s) >>=
                          inlinesToOpenDocument o
     Cite      _ l -> inlinesToOpenDocument o l
@@ -539,16 +622,20 @@ inlineToOpenDocument o ils
                        else do
                          report $ InlineNotRendered ils
                          return empty
-    Link _ l (s,t) ->  mkLink s t <$> inlinesToOpenDocument o l
+    Link _ l (s,t) -> do
+      identTypes <- gets stIdentTypes
+      mkLink o identTypes s t <$> inlinesToOpenDocument o l
     Image attr _ (s,t) -> mkImg attr s t
     Note        l  -> mkNote l
     where
+      formatOpenDocument :: FormatOptions -> [SourceLine] -> [[Doc Text]]
+      formatOpenDocument _fmtOpts = map (map toHlTok)
+      toHlTok :: Token -> Doc Text
+      toHlTok (toktype,tok) =
+        inTags False "text:span" [("text:style-name", T.pack $ show toktype)] $ preformatted tok
+      unhighlighted s = inlinedCode $ preformatted s
       preformatted s = handleSpaces $ escapeStringForXML s
       inlinedCode s = return $ inTags False "text:span" [("text:style-name", "Source_Text")] s
-      mkLink   s t = inTags False "text:a" [ ("xlink:type" , "simple")
-                                           , ("xlink:href" , s       )
-                                           , ("office:name", t       )
-                                           ] . inSpanTags "Definition"
       mkImg (_, _, kvs) s _ = do
                id' <- gets stImageId
                modify (\st -> st{ stImageId = id' + 1 })
@@ -564,6 +651,16 @@ inlineToOpenDocument o ils
                                                  , ("xlink:type"   , "simple")
                                                  , ("xlink:show"   , "embed" )
                                                  , ("xlink:actuate", "onLoad")]
+      mkSpan attr xs =  do
+        let (ident,_,_) = attr
+            i = withLangFromAttr attr (inlinesToOpenDocument o xs)
+            mkBookmarkedSpan b =
+              if isEmpty b
+                then selfClosingBookmark ident
+                else inBookmarkTags ident b
+        if T.null ident
+          then i
+          else fmap mkBookmarkedSpan i
       mkNote     l = do
         n <- length <$> gets stNotes
         let footNote t = inTags False "text:note"
@@ -574,6 +671,45 @@ inlineToOpenDocument o ils
         nn <- footNote <$> withParagraphStyle o "Footnote" l
         addNote nn
         return nn
+
+mkLink :: WriterOptions -> [(Text,ReferenceType)] -> Text -> Text -> Doc Text -> Doc Text
+mkLink o identTypes s t d =
+  let maybeIdentAndType = case T.uncons s of
+                            Just ('#', ident) -> find ((ident ==) . fst) identTypes
+                            _                 -> Nothing
+      d' = inSpanTags "Definition" d
+      ref refType format ident       = inTags False refType
+                                       [ ("text:reference-format", format ),
+                                         ("text:ref-name", ident) ]
+      inlineSpace                    = selfClosingTag "text:s" []
+      bookmarkRef                    = ref "text:bookmark-ref"
+      bookmarkRefNumber ident        = bookmarkRef "number" ident mempty
+      bookmarkRefName ident          = bookmarkRef "text" ident d
+      bookmarkRefNameNumber ident    = bookmarkRefNumber ident <> inlineSpace <> bookmarkRefName ident
+      bookmarkRef'
+        | isEnabled Ext_xrefs_number o && isEnabled Ext_xrefs_name o = bookmarkRefNameNumber
+        | isEnabled Ext_xrefs_name o                                 = bookmarkRefName
+        | otherwise                                                  = bookmarkRefNumber
+      sequenceRef                    = ref "text:sequence-ref"
+      sequenceRefNumber ident        = sequenceRef "value" ident mempty
+      sequenceRefName ident          = sequenceRef "caption" ident d
+      sequenceRefNameNumber ident    = sequenceRefNumber ident <> inlineSpace <> sequenceRefName ident
+      sequenceRef'
+        | isEnabled Ext_xrefs_number o && isEnabled Ext_xrefs_name o = sequenceRefNameNumber
+        | isEnabled Ext_xrefs_name o                                 = sequenceRefName
+        | otherwise                                                  = sequenceRefNumber
+      link = inTags False "text:a" [ ("xlink:type" , "simple")
+                                          , ("xlink:href" , s       )
+                                          , ("office:name", t       )
+                                          ] d'
+      linkOrReference = case maybeIdentAndType of
+                          Just (ident, HeaderRef) -> bookmarkRef' ident
+                          Just (ident, TableRef)  -> sequenceRef' ident
+                          Just (ident, ImageRef)  -> sequenceRef' ident
+                          _                       -> link
+      in if isEnabled Ext_xrefs_name o || isEnabled Ext_xrefs_number o
+            then linkOrReference
+            else link
 
 bulletListStyle :: PandocMonad m => Int -> OD m (Int,(Int,[Doc Text]))
 bulletListStyle l = do
@@ -624,14 +760,19 @@ listLevelStyle i =
                       , ("fo:margin-left", indent <> "in")
                       ]
 
-tableStyle :: Int -> [(Char,Double)] -> Doc Text
-tableStyle num wcs =
+tableStyle :: Int -> Double -> [(Char,Double)] -> Doc Text
+tableStyle num textWidth wcs =
     let tableId        = "Table" <> tshow (num + 1)
+        tableWidthAttr :: [(Text,Text)]
+        tableWidthAttr
+          | textWidth <= 1 && textWidth > 0 = [("style:rel-width",
+                                                T.pack (show (round (textWidth * 100) :: Int) <> "%"))]
+          | otherwise    = []
         table          = inTags True "style:style"
                          [("style:name", tableId)
                          ,("style:family", "table")] $
                          selfClosingTag "style:table-properties"
-                         [("table:align"    , "center")]
+                         (("table:align", "center") : tableWidthAttr)
         colStyle (c,0) = selfClosingTag "style:style"
                          [ ("style:name"  , tableId <> "." <> T.singleton c)
                          , ("style:family", "table-column"       )]
@@ -682,6 +823,20 @@ paraStyle attrs = do
   addParaStyle $ inTags True "style:style" (styleAttr <> attrs) paraProps
   return pn
 
+paraStyleFromParent :: PandocMonad m => Text -> [(Text,Text)] -> OD m Int
+paraStyleFromParent parent attrs = do
+  pn <- (+) 1 . length  <$> gets stParaStyles
+  let styleAttr = [ ("style:name"             , "P" <> tshow pn)
+                  , ("style:family"           , "paragraph")
+                  , ("style:parent-style-name", parent)]
+      paraProps = if null attrs
+                     then mempty
+                     else selfClosingTag
+                          "style:paragraph-properties" attrs
+  addParaStyle $ inTags True "style:style" styleAttr paraProps
+  return pn
+
+
 paraListStyle :: PandocMonad m => Int -> OD m Int
 paraListStyle l = paraStyle
   [("style:parent-style-name","Text_20_body")
@@ -716,34 +871,33 @@ data TextStyle = Italic
 textStyleAttr :: Map.Map Text Text
               -> TextStyle
               -> Map.Map Text Text
-textStyleAttr m s
-    | Italic <- s = Map.insert "fo:font-style" "italic" .
-                    Map.insert "style:font-style-asian" "italic" .
-                    Map.insert "style:font-style-complex" "italic" $ m
-    | Bold   <- s = Map.insert "fo:font-weight" "bold" .
-                    Map.insert "style:font-weight-asian" "bold" .
-                    Map.insert "style:font-weight-complex" "bold" $ m
-    | Under  <- s = Map.insert "style:text-underline-style" "solid" .
-                    Map.insert "style:text-underline-width" "auto" .
-                    Map.insert "style:text-underline-color" "font-color" $ m
-    | Strike <- s = Map.insert "style:text-line-through-style" "solid" m
-    | Sub    <- s = Map.insert "style:text-position" "sub 58%" m
-    | Sup    <- s = Map.insert "style:text-position" "super 58%" m
-    | SmallC <- s = Map.insert "fo:font-variant" "small-caps" m
-    | Pre    <- s = Map.insert "style:font-name" "Courier New" .
-                    Map.insert "style:font-name-asian" "Courier New" .
-                    Map.insert "style:font-name-complex" "Courier New" $ m
-    | Language lang <- s
-                  = Map.insert "fo:language" (langLanguage lang) .
-                    Map.insert "fo:country" (langRegion lang) $ m
-    | otherwise   = m
+textStyleAttr m = \case
+  Italic -> Map.insert "fo:font-style" "italic" .
+                Map.insert "style:font-style-asian" "italic" .
+                Map.insert "style:font-style-complex" "italic" $ m
+  Bold   -> Map.insert "fo:font-weight" "bold" .
+                Map.insert "style:font-weight-asian" "bold" .
+                Map.insert "style:font-weight-complex" "bold" $ m
+  Under  -> Map.insert "style:text-underline-style" "solid" .
+                Map.insert "style:text-underline-width" "auto" .
+                Map.insert "style:text-underline-color" "font-color" $ m
+  Strike -> Map.insert "style:text-line-through-style" "solid" m
+  Sub    -> Map.insert "style:text-position" "sub 58%" m
+  Sup    -> Map.insert "style:text-position" "super 58%" m
+  SmallC -> Map.insert "fo:font-variant" "small-caps" m
+  Pre    -> Map.insert "style:font-name" "Courier New" .
+            Map.insert "style:font-name-asian" "Courier New" .
+            Map.insert "style:font-name-complex" "Courier New" $ m
+  Language lang ->
+            Map.insert "fo:language" (langLanguage lang) .
+            maybe id (Map.insert "fo:country") (langRegion lang) $ m
 
 withLangFromAttr :: PandocMonad m => Attr -> OD m a -> OD m a
 withLangFromAttr (_,_,kvs) action =
   case lookup "lang" kvs of
        Nothing -> action
        Just l  ->
-         case parseBCP47 l of
+         case parseLang l of
               Right lang -> withTextStyle (Language lang) action
               Left _ -> do
                 report $ InvalidLang l

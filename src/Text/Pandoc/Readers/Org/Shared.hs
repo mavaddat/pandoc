@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Readers.Org.Shared
-   Copyright   : Copyright (C) 2014-2020 Albert Krewinkel
+   Copyright   : Copyright (C) 2014-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
@@ -26,7 +26,8 @@ import Text.Pandoc.Shared (elemText)
 isImageFilename :: Text -> Bool
 isImageFilename fp = hasImageExtension && (isValid (T.unpack fp) || isKnownProtocolUri)
  where
-   hasImageExtension = takeExtension (T.unpack fp) `elem` imageExtensions
+   hasImageExtension = takeExtension (T.unpack $ T.toLower fp)
+                       `elem` imageExtensions
    isKnownProtocolUri = any (\x -> (x <> "://") `T.isPrefixOf` fp) protocols
 
    imageExtensions = [ ".jpeg", ".jpg", ".png", ".gif", ".svg" ]
@@ -57,9 +58,7 @@ cleanLinkText s
 originalLang :: Text -> [(Text, Text)]
 originalLang lang =
   let transLang = translateLang lang
-  in if transLang == lang
-     then []
-     else [("org-language", lang)]
+  in [("org-language", lang) | transLang /= lang]
 
 -- | Translate from Org-mode's programming language identifiers to those used
 -- by Pandoc.  This is useful to allow for proper syntax highlighting in

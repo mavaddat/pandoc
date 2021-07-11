@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Readers.Org
-   Copyright   : © 2019-2020 Albert Krewinkel
+   Copyright   : © 2019-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
@@ -20,18 +20,20 @@ import Text.Pandoc.Builder hiding (cell)
 import Text.Pandoc.Error (PandocError (PandocParseError))
 import Text.Pandoc.Options (ReaderOptions)
 import Text.Pandoc.Shared (stringify)
-
+import Text.Pandoc.Sources (ToSources(..), sourcesToText)
 import qualified Text.Jira.Markup as Jira
 
 -- | Read Jira wiki markup.
-readJira :: PandocMonad m
+readJira :: (PandocMonad m, ToSources a)
          => ReaderOptions
-         -> Text
+         -> a
          -> m Pandoc
-readJira _opts s = case parse s of
-  Right d -> return $ jiraToPandoc d
-  Left e  -> throwError . PandocParseError $
-             "Jira parse error" `append` pack (show e)
+readJira _opts inp = do
+  let sources = toSources inp
+  case parse (sourcesToText sources) of
+    Right d -> return $ jiraToPandoc d
+    Left e  -> throwError . PandocParseError $
+               "Jira parse error" `append` pack (show e)
 
 jiraToPandoc :: Jira.Doc -> Pandoc
 jiraToPandoc (Jira.Doc blks) = doc $ foldMap jiraToPandocBlocks blks
@@ -71,10 +73,10 @@ toPandocCodeBlocks langMay params txt =
                   Nothing                   -> []
   in codeBlockWith ("", classes, map paramToPair params) txt
 
--- | Create a pandoc @'Div'@
+-- | Create a pandoc @'Div'@ from a panel.
 toPandocDiv :: [Jira.Parameter] -> [Jira.Block] -> Blocks
 toPandocDiv params =
-  divWith ("", [], map paramToPair params) . foldMap jiraToPandocBlocks
+  divWith ("", ["panel"], map paramToPair params) . foldMap jiraToPandocBlocks
 
 paramToPair :: Jira.Parameter -> (Text, Text)
 paramToPair (Jira.Parameter key value) = (key, value)
@@ -141,7 +143,7 @@ jiraToPandocInlines = \case
 
     fromStyle = \case
       Jira.Emphasis    -> emph
-      Jira.Insert      -> spanWith ("", ["underline"], [])
+      Jira.Insert      -> underline
       Jira.Strikeout   -> strikeout
       Jira.Strong      -> strong
       Jira.Subscript   -> subscript
@@ -170,6 +172,8 @@ jiraLinkToPandoc linkType alias url =
     Jira.Email      -> link ("mailto:" <> url') "" alias'
     Jira.Attachment -> linkWith ("", ["attachment"], []) url' "" alias'
     Jira.User       -> linkWith ("", ["user-account"], []) url' "" alias'
+    Jira.SmartCard  -> linkWith ("", ["smart-card"], []) url' "" alias'
+    Jira.SmartLink  -> linkWith ("", ["smart-link"], []) url' "" alias'
 
 -- | Get unicode representation of a Jira icon.
 iconUnicode :: Jira.Icon -> Text

@@ -2,7 +2,7 @@
 {-# LANGUAGE TupleSections     #-}
 {- |
    Module      : Text.Pandoc.SelfContained
-   Copyright   : Copyright (C) 2011-2020 John MacFarlane
+   Copyright   : Copyright (C) 2011-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -16,7 +16,6 @@ the HTML using data URIs.
 module Text.Pandoc.SelfContained ( makeDataURI, makeSelfContained ) where
 import Codec.Compression.GZip as Gzip
 import Control.Applicative ((<|>))
-import Control.Monad.Except (throwError)
 import Control.Monad.Trans (lift)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64
@@ -29,7 +28,6 @@ import System.FilePath (takeDirectory, takeExtension, (</>))
 import Text.HTML.TagSoup
 import Text.Pandoc.Class.PandocMonad (PandocMonad (..), fetchItem,
                                       getInputFiles, report, setInputFiles)
-import Text.Pandoc.Error
 import Text.Pandoc.Logging
 import Text.Pandoc.MIME (MimeType)
 import Text.Pandoc.Shared (isURI, renderTags', trim)
@@ -50,19 +48,26 @@ makeDataURI (mime, raw) =
                    then mime <> ";charset=utf-8"
                    else mime  -- mime type already has charset
 
+isSourceAttribute :: T.Text -> (T.Text, T.Text) -> Bool
+isSourceAttribute tagname (x,_) =
+  x == "src" ||
+  x == "data-src" ||
+  (x == "href" && tagname == "link") ||
+  x == "poster" ||
+  x == "data-background-image"
+
 convertTags :: PandocMonad m => [Tag T.Text] -> m [Tag T.Text]
 convertTags [] = return []
 convertTags (t@TagOpen{}:ts)
   | fromAttrib "data-external" t == "1" = (t:) <$> convertTags ts
 convertTags (t@(TagOpen tagname as):ts)
-  | tagname `elem`
-     ["img", "embed", "video", "input", "audio", "source", "track",
-      "section"] = do
+  | any (isSourceAttribute tagname) as
+     = do
        as' <- mapM processAttribute as
        rest <- convertTags ts
        return $ TagOpen tagname as' : rest
   where processAttribute (x,y) =
-           if x `elem` ["src", "data-src", "href", "poster", "data-background-image"]
+           if isSourceAttribute tagname (x,y)
               then do
                 enc <- getDataURI (fromAttrib "type" t) y
                 return (x, enc)
@@ -237,11 +242,10 @@ getData mimetype src
       let raw' = if ext `elem` [".gz", ".svgz"]
                  then B.concat $ L.toChunks $ Gzip.decompress $ L.fromChunks [raw]
                  else raw
-      mime <- case (mimetype, respMime) of
-                ("",Nothing) -> throwError $ PandocSomeError
-                  $ "Could not determine mime type for `" <> src <> "'"
-                (x, Nothing) -> return x
-                (_, Just x ) -> return x
+      let mime = case (mimetype, respMime) of
+                  ("",Nothing) -> "application/octet-stream"
+                  (x, Nothing) -> x
+                  (_, Just x ) -> x
       result <- if "text/css" `T.isPrefixOf` mime
                 then do
                   oldInputs <- getInputFiles

@@ -1,6 +1,6 @@
 {- |
    Module      : Text.Pandoc.CSV
-   Copyright   : Copyright (C) 2017–2020 John MacFarlane <jgm@berkeley.edu>
+   Copyright   : Copyright (C) 2017-2021 John MacFarlane <jgm@berkeley.edu>
    License     : GNU GPL, version 2 or above
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
    Stability   : alpha
@@ -68,8 +68,7 @@ escaped opts = try $
 
 pCSVUnquotedCell :: CSVOptions -> Parser Text
 pCSVUnquotedCell opts = T.pack <$>
-  many (satisfy (\c -> c /= csvDelim opts && c /= '\r' && c /= '\n'
-                  && c /= csvQuote opts))
+  many (satisfy (\c -> c /= csvDelim opts && c /= '\r' && c /= '\n'))
 
 pCSVDelim :: CSVOptions -> Parser ()
 pCSVDelim opts = do

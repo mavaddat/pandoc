@@ -1,4 +1,3 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Tests.Readers.Muse
@@ -13,7 +12,6 @@ Tests for the Muse reader.
 -}
 module Tests.Readers.Muse (tests) where
 
-import Prelude
 import Data.List (intersperse)
 import Data.Monoid (Any (..))
 import Data.Text (Text)
@@ -51,7 +49,7 @@ simpleTable' n capt headers rows
           (TableFoot nullAttr [])
   where
     toRow = Row nullAttr . map simpleCell
-    toHeaderRow l = if null l then [] else [toRow l]
+    toHeaderRow l = [toRow l | not (null l)]
 
 -- Tables don't round-trip yet
 --

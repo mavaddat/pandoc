@@ -1,9 +1,10 @@
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {- |
    Module      : Text.Pandoc.App
-   Copyright   : Copyright (C) 2006-2020 John MacFarlane
+   Copyright   : Copyright (C) 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley@edu>
@@ -19,14 +20,16 @@ module Text.Pandoc.App (
           , Filter(..)
           , defaultOpts
           , parseOptions
+          , parseOptionsFromArgs
           , options
           , applyFilters
           ) where
 import qualified Control.Exception as E
-import Control.Monad
-import Control.Monad.Trans
+import Control.Monad ( (>=>), when )
+import Control.Monad.Trans ( MonadIO(..) )
 import Control.Monad.Except (throwError)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
 import Data.Maybe (fromMaybe, isJust, isNothing)
@@ -40,23 +43,25 @@ import qualified Data.Text.Encoding.Error as TSE
 import Network.URI (URI (..), parseURI)
 import System.Directory (doesDirectoryExist)
 import System.Exit (exitSuccess)
-import System.FilePath
+import System.FilePath ( takeBaseName, takeExtension )
 import System.IO (nativeNewline, stdout)
 import qualified System.IO as IO (Newline (..))
 import Text.Pandoc
+import Text.Pandoc.Builder (setMeta)
+import Text.Pandoc.MIME (getCharset)
 import Text.Pandoc.App.FormatHeuristics (formatFromFilePaths)
 import Text.Pandoc.App.Opt (Opt (..), LineEnding (..), defaultOpts,
-                            IpynbOutput (..) )
-import Text.Pandoc.App.CommandLineOptions (parseOptions, options)
+                            IpynbOutput (..))
+import Text.Pandoc.App.CommandLineOptions (parseOptions, parseOptionsFromArgs,
+                                           options)
 import Text.Pandoc.App.OutputSettings (OutputSettings (..), optToOutputSettings)
-import Text.Pandoc.BCP47 (Lang (..), parseBCP47)
-import Text.Pandoc.Builder (setMeta)
+import Text.Collate.Lang (Lang (..), parseLang)
 import Text.Pandoc.Filter (Filter (JSONFilter, LuaFilter), applyFilters)
 import Text.Pandoc.PDF (makePDF)
-import Text.Pandoc.SelfContained (makeDataURI, makeSelfContained)
+import Text.Pandoc.SelfContained (makeSelfContained)
 import Text.Pandoc.Shared (eastAsianLineBreakFilter, stripEmptyParagraphs,
          headerShift, isURI, tabFilter, uriPathToPath, filterIpynbOutput,
-         defaultUserDataDirs, tshow, findM)
+         defaultUserDataDir, tshow)
 import Text.Pandoc.Writers.Shared (lookupMetaString)
 import Text.Pandoc.Readers.Markdown (yamlToMeta)
 import qualified Text.Pandoc.UTF8 as UTF8
@@ -67,33 +72,28 @@ import System.Posix.Terminal (queryTerminal)
 
 convertWithOpts :: Opt -> IO ()
 convertWithOpts opts = do
+  datadir <- case optDataDir opts of
+                  Nothing   -> do
+                    d <- defaultUserDataDir
+                    exists <- doesDirectoryExist d
+                    return $ if exists
+                                then Just d
+                                else Nothing
+                  Just _    -> return $ optDataDir opts
+
   let outputFile = fromMaybe "-" (optOutputFile opts)
   let filters = optFilters opts
   let verbosity = optVerbosity opts
 
   when (optDumpArgs opts) $
-    do UTF8.hPutStrLn stdout outputFile
-       mapM_ (UTF8.hPutStrLn stdout) (fromMaybe ["-"] $ optInputFiles opts)
+    do UTF8.hPutStrLn stdout (T.pack outputFile)
+       mapM_ (UTF8.hPutStrLn stdout . T.pack)
+             (fromMaybe ["-"] $ optInputFiles opts)
        exitSuccess
-
-  let isPandocCiteproc (JSONFilter f) = takeBaseName f == "pandoc-citeproc"
-      isPandocCiteproc _              = False
-  -- --bibliography implies -F pandoc-citeproc for backwards compatibility:
-  let needsCiteproc = isJust (lookupMeta "bibliography"
-                                (optMetadata opts)) &&
-                      optCiteMethod opts `notElem` [Natbib, Biblatex] &&
-                      not (any isPandocCiteproc filters)
-  let filters' = filters ++ [ JSONFilter "pandoc-citeproc" | needsCiteproc ]
 
   let sources = case optInputFiles opts of
                      Just xs | not (optIgnoreArgs opts) -> xs
                      _ -> ["-"]
-
-  datadir <- case optDataDir opts of
-                  Nothing   -> do
-                    ds <- defaultUserDataDirs
-                    findM doesDirectoryExist ds
-                  Just _    -> return $ optDataDir opts
 
   let runIO' :: PandocIO a -> IO a
       runIO' f = do
@@ -140,9 +140,10 @@ convertWithOpts opts = do
                                  (map (T.pack . takeExtension) sources) "markdown"
                              return "markdown"
 
+    let readerNameBase = T.takeWhile (\c -> c /= '+' && c /= '-') readerName
     let pdfOutput = map toLower (takeExtension outputFile) == ".pdf"
 
-    when (pdfOutput && readerName == "latex") $
+    when (pdfOutput && readerNameBase == "latex") $
       case optInputFiles opts of
         Just (inputFile:_) -> report $ UnusualConversion $ T.pack $
           "to convert a .tex file to PDF, you get better results by using pdflatex "
@@ -153,24 +154,34 @@ convertWithOpts opts = do
     (reader :: Reader PandocIO, readerExts) <- getReader readerName
 
     let convertTabs = tabFilter (if optPreserveTabs opts ||
-                                      readerName == "t2t" ||
-                                      readerName == "man"
+                                      readerNameBase == "t2t" ||
+                                      readerNameBase == "man"
                                     then 0
                                     else optTabStop opts)
 
 
-    let readSources :: [FilePath] -> PandocIO Text
-        readSources srcs = convertTabs . T.intercalate (T.pack "\n") <$>
-                              mapM readSource srcs
+    let readSources :: [FilePath] -> PandocIO [(FilePath, Text)]
+        readSources srcs =
+          mapM (\fp -> do
+                   t <- readSource fp
+                   return (if fp == "-" then "" else fp, convertTabs t)) srcs
 
 
     outputSettings <- optToOutputSettings opts
     let format = outputFormat outputSettings
     let writer = outputWriter outputSettings
     let writerName = outputWriterName outputSettings
+    let writerNameBase = T.takeWhile (\c -> c /= '+' && c /= '-') writerName
     let writerOptions = outputWriterOptions outputSettings
 
-    let standalone = optStandalone opts || not (isTextFormat format) || pdfOutput
+    let bibOutput = writerNameBase == "bibtex" ||
+                    writerNameBase == "biblatex" ||
+                    writerNameBase == "csljson"
+
+    let standalone = optStandalone opts ||
+                     not (isTextFormat format) ||
+                     pdfOutput ||
+                     bibOutput
 
     -- We don't want to send output to the terminal if the user
     -- does 'pandoc -t docx input.txt'; though we allow them to
@@ -190,20 +201,9 @@ convertWithOpts opts = do
                     Nothing -> readDataFile "abbreviations"
                     Just f  -> readFileStrict f
 
-    metadata <- if format == "jats" &&
-                   isNothing (lookupMeta "csl" (optMetadata opts)) &&
-                   isNothing (lookupMeta "citation-style"
-                                               (optMetadata opts))
-                   then do
-                     jatsCSL <- readDataFile "jats.csl"
-                     let jatsEncoded = makeDataURI
-                                         ("application/xml", jatsCSL)
-                     return $ setMeta "csl" jatsEncoded $ optMetadata opts
-                   else return $ optMetadata opts
-
     case lookupMetaString "lang" (optMetadata opts) of
-           ""      -> setTranslations $ Lang "en" "" "US" []
-           l       -> case parseBCP47 l of
+           ""      -> setTranslations $ Lang "en" Nothing (Just "US") [] [] []
+           l       -> case parseLang l of
                            Left _   -> report $ InvalidLang l
                            Right l' -> setTranslations l'
 
@@ -223,8 +223,9 @@ convertWithOpts opts = do
     metadataFromFile <-
       case optMetadataFiles opts of
         []    -> return mempty
-        paths -> mapM readFileLazy paths >>=
-                    fmap mconcat . mapM (yamlToMeta readerOpts)
+        paths -> mconcat <$>
+           mapM (\path -> do raw <- readFileLazy path
+                             yamlToMeta readerOpts (Just path) raw) paths
 
     let transforms = (case optShiftHeadingLevelBy opts of
                           0             -> id
@@ -240,6 +241,7 @@ convertWithOpts opts = do
                          then (eastAsianLineBreakFilter :)
                          else id) .
                      (case optIpynbOutput opts of
+                       _ | readerNameBase /= "ipynb" -> id
                        IpynbOutputAll  -> id
                        IpynbOutputNone -> (filterIpynbOutput Nothing :)
                        IpynbOutputBest -> (filterIpynbOutput (Just $
@@ -255,31 +257,51 @@ convertWithOpts opts = do
     let sourceToDoc :: [FilePath] -> PandocIO Pandoc
         sourceToDoc sources' =
            case reader of
-                TextReader r
-                  | optFileScope opts || readerName == "json" ->
-                      mconcat <$> mapM (readSource >=> r readerOpts) sources'
-                  | otherwise ->
-                      readSources sources' >>= r readerOpts
-                ByteStringReader r ->
-                  mconcat <$> mapM (readFile' >=> r readerOpts) sources'
+             TextReader r
+               | readerNameBase == "json" ->
+                   mconcat <$> mapM (readSource >=> r readerOpts) sources'
+               | optFileScope opts  ->
+                   -- Read source and convert tabs (see #6709)
+                   let readSource' = fmap convertTabs . readSource
+                   in mconcat <$> mapM (readSource' >=> r readerOpts) sources'
+               | otherwise ->
+                   readSources sources' >>= r readerOpts
+             ByteStringReader r ->
+               mconcat <$> mapM (readFile' >=> r readerOpts) sources'
 
 
-    when (readerName == "markdown_github" ||
-          writerName == "markdown_github") $
+    when (readerNameBase == "markdown_github" ||
+          writerNameBase == "markdown_github") $
       report $ Deprecated "markdown_github" "Use gfm instead."
 
     mapM_ (uncurry setRequestHeader) (optRequestHeaders opts)
 
     setNoCheckCertificate (optNoCheckCertificate opts)
 
+    let isPandocCiteproc (JSONFilter f) = takeBaseName f == "pandoc-citeproc"
+        isPandocCiteproc _              = False
+
+    when (any isPandocCiteproc filters) $
+      report $ Deprecated "pandoc-citeproc filter"
+               "Use --citeproc instead."
+
+    let cslMetadata =
+          maybe id (setMeta "csl") (optCSL opts) .
+          (case optBibliography opts of
+             [] -> id
+             xs -> setMeta "bibliography" xs) .
+          maybe id (setMeta "citation-abbreviations")
+                         (optCitationAbbreviations opts) $ mempty
+
     doc <- sourceToDoc sources >>=
               (   (if isJust (optExtractMedia opts)
                       then fillMediaBag
                       else return)
               >=> return . adjustMetadata (metadataFromFile <>)
-              >=> return . adjustMetadata (<> metadata)
+              >=> return . adjustMetadata (<> optMetadata opts)
+              >=> return . adjustMetadata (<> cslMetadata)
               >=> applyTransforms transforms
-              >=> applyFilters readerOpts filters' [T.unpack format]
+              >=> applyFilters readerOpts filters [T.unpack format]
               >=> maybe return extractMedia (optExtractMedia opts)
               )
 
@@ -344,7 +366,18 @@ readSource src = case parseURI src of
                          _ -> PandocAppError (tshow e))
 
 readURI :: FilePath -> PandocIO Text
-readURI src = UTF8.toText . fst <$> openURL (T.pack src)
+readURI src = do
+  (bs, mt) <- openURL (T.pack src)
+  case mt >>= getCharset of
+    Just "UTF-8"      -> return $ UTF8.toText bs
+    Just "ISO-8859-1" -> return $ T.pack $ B8.unpack bs
+    Just charset      -> throwError $ PandocUnsupportedCharsetError charset
+    Nothing           -> liftIO $ -- try first as UTF-8, then as latin1
+                          E.catch (return $! UTF8.toText bs)
+                                  (\case
+                                      TSE.DecodeError{} ->
+                                        return $ T.pack $ B8.unpack bs
+                                      e -> E.throwIO e)
 
 readFile' :: MonadIO m => FilePath -> m BL.ByteString
 readFile' "-" = liftIO BL.getContents
@@ -355,6 +388,5 @@ writeFnBinary "-" = liftIO . BL.putStr
 writeFnBinary f   = liftIO . BL.writeFile (UTF8.encodePath f)
 
 writerFn :: MonadIO m => IO.Newline -> FilePath -> Text -> m ()
--- TODO this implementation isn't maximally efficient:
-writerFn eol "-" = liftIO . UTF8.putStrWith eol . T.unpack
-writerFn eol f   = liftIO . UTF8.writeFileWith eol f . T.unpack
+writerFn eol "-" = liftIO . UTF8.putStrWith eol
+writerFn eol f   = liftIO . UTF8.writeFileWith eol f

@@ -1,8 +1,8 @@
 {-# LANGUAGE FlexibleContexts  #-}
 {- |
 Module      : Text.Pandoc.Lua.Filter
-Copyright   : © 2012–2020 John MacFarlane,
-              © 2017-2020 Albert Krewinkel
+Copyright   : © 2012-2021 John MacFarlane,
+              © 2017-2021 Albert Krewinkel
 License     : GNU GPL, version 2 or above
 Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
 Stability   : alpha
@@ -13,7 +13,9 @@ module Text.Pandoc.Lua.Filter ( LuaFilterFunction
                               , LuaFilter
                               , runFilterFile
                               , walkInlines
+                              , walkInlineLists
                               , walkBlocks
+                              , walkBlockLists
                               , module Text.Pandoc.Lua.Walk
                               ) where
 import Control.Applicative ((<|>))
@@ -22,6 +24,7 @@ import Control.Monad.Catch (finally, try)
 import Data.Data (Data, DataType, dataTypeConstrs, dataTypeName, dataTypeOf,
                   showConstr, toConstr, tyconUQname)
 import Data.Foldable (foldrM)
+import Data.List (foldl')
 import Data.Map (Map)
 import Data.Maybe (fromMaybe)
 import Foreign.Lua (Lua, Peekable, Pushable, StackIndex)
@@ -160,7 +163,7 @@ mconcatMapM :: (Monad m) => (a -> m [a]) -> [a] -> m [a]
 mconcatMapM f = fmap mconcat . mapM f
 
 hasOneOf :: LuaFilter -> [String] -> Bool
-hasOneOf (LuaFilter fnMap) = any (\k -> Map.member k fnMap)
+hasOneOf (LuaFilter fnMap) = any (`Map.member` fnMap)
 
 contains :: LuaFilter -> String -> Bool
 contains (LuaFilter fnMap) = (`Map.member` fnMap)
@@ -204,7 +207,7 @@ walkMeta lf (Pandoc m bs) = do
 
 walkPandoc :: LuaFilter -> Pandoc -> Lua Pandoc
 walkPandoc (LuaFilter fnMap) =
-  case foldl mplus Nothing (map (`Map.lookup` fnMap) pandocFilterNames) of
+  case foldl' mplus Nothing (map (`Map.lookup` fnMap) pandocFilterNames) of
     Just fn -> \x -> runFilterFunction fn x *> singleElement x
     Nothing -> return
 

@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Lua.Module.MediaBag
-   Copyright   : Copyright © 2017-2020 Albert Krewinkel
+   Copyright   : Copyright © 2017-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
@@ -13,6 +13,7 @@ module Text.Pandoc.Lua.Module.MediaBag
   ( pushModule
   ) where
 
+import Prelude hiding (lookup)
 import Control.Monad (zipWithM_)
 import Foreign.Lua (Lua, NumResults, Optional)
 import Text.Pandoc.Class.CommonState (CommonState (..))
@@ -36,10 +37,10 @@ pushModule = do
   liftPandocLua Lua.newtable
   addFunction "delete" delete
   addFunction "empty" empty
-  addFunction "insert" insertMediaFn
+  addFunction "insert" insert
   addFunction "items" items
-  addFunction "lookup" lookupMediaFn
-  addFunction "list" mediaDirectoryFn
+  addFunction "lookup" lookup
+  addFunction "list" list
   addFunction "fetch" fetch
   return 1
 
@@ -53,11 +54,11 @@ empty :: PandocLua NumResults
 empty = 0 <$ modifyCommonState (\st -> st { stMediaBag = mempty })
 
 -- | Insert a new item into the media bag.
-insertMediaFn :: FilePath
-              -> Optional MimeType
-              -> BL.ByteString
-              -> PandocLua NumResults
-insertMediaFn fp optionalMime contents = do
+insert :: FilePath
+       -> Optional MimeType
+       -> BL.ByteString
+       -> PandocLua NumResults
+insert fp optionalMime contents = do
   mb <- getMediaBag
   setMediaBag $ MB.insertMedia fp (Lua.fromOptional optionalMime) contents mb
   return (Lua.NumResults 0)
@@ -66,19 +67,19 @@ insertMediaFn fp optionalMime contents = do
 items :: PandocLua NumResults
 items = getMediaBag >>= liftPandocLua . pushIterator
 
-lookupMediaFn :: FilePath
-              -> PandocLua NumResults
-lookupMediaFn fp = do
+lookup :: FilePath
+       -> PandocLua NumResults
+lookup fp = do
   res <- MB.lookupMedia fp <$> getMediaBag
   liftPandocLua $ case res of
     Nothing -> 1 <$ Lua.pushnil
-    Just (mimeType, contents) -> do
-      Lua.push mimeType
-      Lua.push contents
+    Just item -> do
+      Lua.push $ MB.mediaMimeType item
+      Lua.push $ MB.mediaContents item
       return 2
 
-mediaDirectoryFn :: PandocLua NumResults
-mediaDirectoryFn = do
+list :: PandocLua NumResults
+list = do
   dirContents <- MB.mediaDirectory <$> getMediaBag
   liftPandocLua $ do
     Lua.newtable

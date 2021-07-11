@@ -23,21 +23,20 @@ import Text.Pandoc.Class.PandocMonad (PandocMonad (..))
 import Text.Pandoc.Definition
 import Text.Pandoc.Options
 import Text.Pandoc.Parsing hiding (enclosed)
-import Text.Pandoc.Shared (crFilter)
-
 
 -- | Read creole from an input string and return a Pandoc document.
-readCreole :: PandocMonad m
+readCreole :: (PandocMonad m, ToSources a)
           => ReaderOptions
-          -> Text
+          -> a
           -> m Pandoc
 readCreole opts s = do
-  res <- readWithM parseCreole def{ stateOptions = opts } $ crFilter s <> "\n\n"
+  let sources = ensureFinalNewlines 2 (toSources s)
+  res <- readWithM parseCreole def{ stateOptions = opts } sources
   case res of
        Left e  -> throwError e
        Right d -> return d
 
-type CRLParser = ParserT Text ParserState
+type CRLParser = ParserT Sources ParserState
 
 --
 -- Utility functions
@@ -252,7 +251,7 @@ inlineNowiki = B.code <$> (start >> manyTillChar (noneOf "\n\r") end)
     end = try $ string "}}}" >> lookAhead (noneOf "}")
 
 placeholder :: PandocMonad m => CRLParser m B.Inlines
--- The semantics of the placeholder is basicallly implementation
+-- The semantics of the placeholder is basically implementation
 -- dependent, so there is no way to DTRT for all cases.
 -- So for now we just drop them.
 placeholder = B.text <$> try (string "<<<" >> manyTill anyChar (string ">>>")

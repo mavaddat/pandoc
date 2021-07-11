@@ -2,16 +2,31 @@ version?=$(shell grep '^[Vv]ersion:' pandoc.cabal | awk '{print $$2;}')
 pandoc=$(shell find dist -name pandoc -type f -exec ls -t {} \; | head -1)
 SOURCEFILES?=$(shell git ls-tree -r master --name-only | grep "\.hs$$")
 BRANCH?=master
-RESOLVER?=lts-13
-GHCOPTS=-fdiagnostics-color=always
+ARCH=$(shell uname -m)
+DOCKERIMAGE=registry.gitlab.b-data.ch/ghc/ghc4pandoc:8.10.4
+COMMIT=$(shell git rev-parse --short HEAD)
+TIMESTAMP=$(shell date "+%Y%m%d_%H%M")
+LATESTBENCH=$(word 1,$(shell ls -t bench_*.csv 2>/dev/null))
+BASELINE?=$(LATESTBENCH)
+ifeq ($(BASELINE),)
+BASELINECMD=
+else
+BASELINECMD=--baseline $(BASELINE)
+endif
+GHCOPTS=-fdiagnostics-color=always -j4 +RTS -A8m -RTS
 WEBSITE=../../web/pandoc.org
+REVISION?=1
+# For gauge:
+# BENCHARGS?=--small --ci=0.90 --match=pattern $(PATTERN)
+# For tasty-bench:
+BENCHARGS?=--csv bench_$(TIMESTAMP).csv $(BASELINECMD) --timeout=6 +RTS -T -RTS $(if $(PATTERN),--pattern "$(PATTERN)",)
 
 quick:
-	stack install --ghc-options='$(GHCOPTS)' --install-ghc --flag 'pandoc:embed_data_files' --fast --test --ghc-options='-j +RTS -A64m -RTS' --test-arguments='-j4 --hide-successes $(TESTARGS)'
+	stack install --ghc-options='$(GHCOPTS)' --install-ghc --flag 'pandoc:embed_data_files' --fast --test --ghc-options='$(GHCOPTS)' --test-arguments='-j4 --hide-successes $(TESTARGS)'
 
 quick-cabal:
 	cabal new-configure . --ghc-options '$(GHCOPTS)' --disable-optimization --enable-tests
-	cabal new-build . --disable-optimization
+	cabal new-build -j4 . --disable-optimization
 	cabal new-run test-pandoc --disable-optimization -- --hide-successes $(TESTARGS)
 
 full-cabal:
@@ -20,7 +35,7 @@ full-cabal:
 	cabal new-run test-pandoc --disable-optimization -- --hide-successes $(TESTARGS)
 
 full:
-	stack install --flag 'pandoc:embed_data_files' --flag 'pandoc:trypandoc' --bench --no-run-benchmarks --test --test-arguments='-j4 --hide-successes' --ghc-options '-Wall -Werror -fno-warn-unused-do-bind -O0 -j4 $(GHCOPTS)'
+	stack install --flag 'pandoc:embed_data_files' --flag 'pandoc:trypandoc' --bench --no-run-benchmarks --test --test-arguments='-j4 --hide-successes' --ghc-options '-Wall -Werror -fno-warn-unused-do-bind -O0 $(GHCOPTS)'
 
 ghci:
 	stack ghci --flag 'pandoc:embed_data_files'
@@ -36,11 +51,14 @@ test:
 ghcid:
 	ghcid -c "stack repl --flag 'pandoc:embed_data_files'"
 
-bench:
-	stack bench --benchmark-arguments='$(BENCHARGS)' --ghc-options '$(GHCOPTS)'
+ghcid-test:
+	ghcid -c "stack repl --ghc-options=-XNoImplicitPrelude --flag 'pandoc:embed_data_files' --ghci-options=-fobject-code pandoc:lib pandoc:test-pandoc"
 
-weigh:
-	stack build --ghc-options '$(GHCOPTS)' pandoc:weigh-pandoc && stack exec weigh-pandoc
+bench:
+	stack bench \
+	  --ghc-options '$(GHCOPTS)' \
+	  --benchmark-arguments='$(BENCHARGS)' 2>&1 | \
+	  tee "bench_latest.txt"
 
 reformat:
 	for f in $(SOURCEFILES); do echo $$f; stylish-haskell -i $$f ; done
@@ -64,48 +82,25 @@ dist: man/pandoc.1
 	cd pandoc-${version}
 	stack setup && stack test && cd .. && rm -rf "pandoc-${version}"
 
-packages: checkdocs winpkg debpkg macospkg
+check: checkdocs check-cabal
 
-checkdocs: README.md
-	! grep -n -e "\t" MANUAL.txt changelog
+checkdocs:
+	! grep -q -n -e "\t" MANUAL.txt changelog.md
 
 debpkg: man/pandoc.1
-	make -C linux && \
-	cp linux/artifacts/pandoc-$(version)-*.* .
-
-macospkg: man/pandoc.1
-	./macos/make_macos_package.sh
-
-winpkg: pandoc-$(version)-windows-i386.msi pandoc-$(version)-windows-i386.zip pandoc-$(version)-windows-x86_64.msi pandoc-$(version)-windows-x86_64.zip
-
-pandoc-$(version)-windows-%.zip: pandoc-$(version)-windows-%.msi
-	ORIGDIR=`pwd` && \
-	CONTAINER=$(basename $<) && \
-	TEMPDIR=`mktemp -d` && \
-	msiextract -C $$TEMPDIR/msi $< && \
-	pushd $$TEMPDIR && \
-	mkdir $$CONTAINER && \
-	find msi -type f -exec cp {} $$CONTAINER/ \; && \
-	zip -r $$ORIGDIR/$@ $$CONTAINER && \
-	popd & \
-	rm -rf $$TEMPDIR
-
-pandoc-$(version)-windows-%.msi: pandoc-windows-%.msi
-	osslsigncode sign -pkcs12 ~/Private/SectigoCodeSigning.exp2023.p12 -in $< -i http://johnmacfarlane.net/ -t http://timestamp.comodoca.com/ -out $@ -askpass
-	rm $<
-
-.INTERMEDIATE: pandoc-windows-i386.msi pandoc-windows-x86_64.msi
-
-pandoc-windows-i386.msi:
-	JOBID=$(shell curl https://ci.appveyor.com/api/projects/jgm/pandoc | jq '.build.jobs[]| select(.name|test("i386")) | .jobId') && \
-	wget "https://ci.appveyor.com/api/buildjobs/$$JOBID/artifacts/windows%2F$@" -O $@
-
-pandoc-windows-x86_64.msi:
-	JOBID=$(shell curl https://ci.appveyor.com/api/projects/jgm/pandoc | jq '.build.jobs[]| select(.name|test("x86_64")) | .jobId') && \
-	wget "https://ci.appveyor.com/api/buildjobs/$$JOBID/artifacts/windows%2F$@" -O $@
+	docker run -v `pwd`:/mnt \
+                   -v `pwd`/linux/artifacts:/artifacts \
+		   --user $(id -u):$(id -g) \
+		   -e REVISION=$(REVISION) \
+		   -w /mnt \
+		   --memory=0 \
+		   --rm \
+		   $(DOCKERIMAGE) \
+		   bash \
+		   /mnt/linux/make_artifacts.sh 2>&1 > docker.log
 
 man/pandoc.1: MANUAL.txt man/pandoc.1.before man/pandoc.1.after
-	pandoc $< -f markdown-smart -t man -s \
+	pandoc $< -f markdown -t man -s \
 		--lua-filter man/manfilter.lua \
 		--include-before-body man/pandoc.1.before \
 		--include-after-body man/pandoc.1.after \
@@ -114,7 +109,7 @@ man/pandoc.1: MANUAL.txt man/pandoc.1.before man/pandoc.1.after
 		-o $@
 
 README.md: README.template MANUAL.txt tools/update-readme.lua
-	pandoc --lua-filter tools/update-readme.lua --reference-links \
+	pandoc --lua-filter tools/update-readme.lua \
 	      --reference-location=section -t gfm $< -o $@
 
 download_stats:
@@ -123,9 +118,9 @@ download_stats:
 
 pandoc-templates:
 	rm ../pandoc-templates/default.* ; \
-	cp data/templates/default.* README.md styles.* ../pandoc-templates/ ; \
+	cp data/templates/* ../pandoc-templates/ ; \
 	pushd ../pandoc-templates/ && \
-	git add default.* README.md styles.* && \
+	git add * && \
 	git commit -m "Updated templates for pandoc $(version)" && \
 	popd
 
@@ -140,4 +135,14 @@ update-website:
 clean:
 	stack clean
 
-.PHONY: deps quick full haddock install clean test bench changes_github macospkg dist prof download_stats reformat lint weigh doc/lua-filters.md packages pandoc-templates trypandoc update-website debpkg macospkg winpkg checkdocs ghcid ghci fix_spacing hlint
+check-cabal: git-files.txt sdist-files.txt
+	echo "Checking to see if all committed test/data files are in sdist."
+	diff -u $^
+
+sdist-files.txt: .FORCE
+	cabal sdist --list-only | sed 's/\.\///' | grep '^\(test\|data\)\/' | sort > $@
+
+git-files.txt: .FORCE
+	git ls-tree -r --name-only HEAD | grep '^\(test\|data\)\/' | sort > $@
+
+.PHONY: .FORCE deps quick full haddock install clean test bench changes_github dist prof download_stats reformat lint weigh doc/lua-filters.md pandoc-templates trypandoc update-website debpkg checkdocs ghcid ghci fix_spacing hlint check check-cabal

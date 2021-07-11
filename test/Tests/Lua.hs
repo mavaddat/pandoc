@@ -1,9 +1,8 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {- |
    Module      : Tests.Lua
-   Copyright   : © 2017-2020 Albert Krewinkel
+   Copyright   : © 2017-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <albert@zeitkraut.de>
@@ -14,7 +13,6 @@ Unit and integration tests for pandoc's Lua subsystem.
 -}
 module Tests.Lua ( runLuaTest, tests ) where
 
-import Prelude
 import Control.Monad (when)
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, localOption)
@@ -179,7 +177,7 @@ tests = map (localOption (QuickCheckTests 20))
       (doc $ para (str . T.pack $ "lua" </> "require-file.lua"))
 
   , testCase "Allow singleton inline in constructors" . runLuaTest $ do
-      Lua.liftIO . assertEqual "Not the exptected Emph" (Emph [Str "test"])
+      Lua.liftIO . assertEqual "Not the expected Emph" (Emph [Str "test"])
         =<< Lua.callFunc "pandoc.Emph" (Str "test")
       Lua.liftIO . assertEqual "Unexpected element" (Para [Str "test"])
         =<< Lua.callFunc "pandoc.Para" ("test" :: String)

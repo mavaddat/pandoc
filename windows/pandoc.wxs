@@ -51,8 +51,6 @@
                            Key="Software\John MacFarlane\Pandoc"
                            Name="Version" Type="string" Value="[ProductVersion]"
                            KeyPath="yes"/>
-            <File Id="pandoc_citeprocEXE" Name="pandoc-citeproc.exe"
-                  Source="$(var.BINPATH)\pandoc-citeproc.exe" />
           </Component>
 
           <Component Id="Documentation"
@@ -125,8 +123,8 @@
 
 
     <!-- Set properties for add/remove programs -->
-    <Property Id="ARPURLINFOABOUT" Value="http://pandoc.org" />
-    <Property Id="ARPHELPLINK" Value="http://pandoc.org" />
+    <Property Id="ARPURLINFOABOUT" Value="https://pandoc.org" />
+    <Property Id="ARPHELPLINK" Value="https://pandoc.org" />
     <Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />    <!-- Remove repair -->
     <Property Id="ARPNOMODIFY" Value="yes" Secure="yes" />    <!-- Remove modify -->
 

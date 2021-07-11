@@ -1,11 +1,12 @@
 {-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveGeneric      #-}
-{-# LANGUAGE TemplateHaskell    #-}
+{-# LANGUAGE LambdaCase         #-}
 {-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE TemplateHaskell    #-}
 {- |
    Module      : Text.Pandoc.Options
-   Copyright   : Copyright (C) 2012-2020 John MacFarlane
+   Copyright   : Copyright (C) 2012-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -64,6 +65,7 @@ data ReaderOptions = ReaderOptions{
        , readerDefaultImageExtension :: Text -- ^ Default extension for images
        , readerTrackChanges          :: TrackChanges -- ^ Track changes setting for docx
        , readerStripComments         :: Bool -- ^ Strip HTML comments instead of parsing as raw HTML
+                                             -- (only implemented in commonmark)
 } deriving (Show, Read, Data, Typeable, Generic)
 
 instance HasSyntaxExtensions ReaderOptions where
@@ -288,7 +290,7 @@ instance Default WriterOptions where
                       , writerTopLevelDivision = TopLevelDefault
                       , writerListings         = False
                       , writerHighlightStyle   = Just pygments
-                      , writerSetextHeaders    = True
+                      , writerSetextHeaders    = False
                       , writerEpubSubdirectory = "EPUB"
                       , writerEpubMetadata     = Nothing
                       , writerEpubFonts        = []
@@ -308,34 +310,12 @@ isEnabled :: HasSyntaxExtensions a => Extension -> a -> Bool
 isEnabled ext opts = ext `extensionEnabled` getExtensions opts
 
 defaultMathJaxURL :: Text
-defaultMathJaxURL = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/"
+defaultMathJaxURL = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js"
 
 defaultKaTeXURL :: Text
 defaultKaTeXURL = "https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.11.1/"
 
-$(deriveJSON defaultOptions ''ReaderOptions)
-
-$(deriveJSON defaultOptions{
-   constructorTagModifier = map toLower,
-   sumEncoding = TaggedObject{
-                    tagFieldName = "method",
-                    contentsFieldName = "url" }
-                           } ''HTMLMathMethod)
-
-$(deriveJSON defaultOptions{ constructorTagModifier =
-                               camelCaseStrToHyphenated
-                           } ''CiteMethod)
-
-$(deriveJSON defaultOptions{ constructorTagModifier =
-                            \t -> case t of
-                                    "NoObfuscation"         -> "none"
-                                    "ReferenceObfuscation"  -> "references"
-                                    "JavascriptObfuscation" -> "javascript"
-                                    _                       -> "none"
-                           } ''ObfuscationMethod)
-
-$(deriveJSON defaultOptions ''HTMLSlideVariant)
-
+-- Update documentation in doc/filters.md if this is changed.
 $(deriveJSON defaultOptions{ constructorTagModifier =
                                camelCaseStrToHyphenated
                            } ''TrackChanges)
@@ -351,3 +331,27 @@ $(deriveJSON defaultOptions{ constructorTagModifier =
 $(deriveJSON defaultOptions{ constructorTagModifier =
                                camelCaseStrToHyphenated
                            } ''ReferenceLocation)
+
+-- Update documentation in doc/filters.md if this is changed.
+$(deriveJSON defaultOptions ''ReaderOptions)
+
+$(deriveJSON defaultOptions{
+   constructorTagModifier = map toLower,
+   sumEncoding = TaggedObject{
+                    tagFieldName = "method",
+                    contentsFieldName = "url" }
+                           } ''HTMLMathMethod)
+
+$(deriveJSON defaultOptions{ constructorTagModifier =
+                               camelCaseStrToHyphenated
+                           } ''CiteMethod)
+
+$(deriveJSON defaultOptions{ constructorTagModifier =
+                            \case
+                                    "NoObfuscation"         -> "none"
+                                    "ReferenceObfuscation"  -> "references"
+                                    "JavascriptObfuscation" -> "javascript"
+                                    _                       -> "none"
+                           } ''ObfuscationMethod)
+
+$(deriveJSON defaultOptions ''HTMLSlideVariant)

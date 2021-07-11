@@ -1,8 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ViewPatterns      #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {- |
    Module      : Text.Pandoc.Readers.CommonMark
-   Copyright   : Copyright (C) 2015-2020 John MacFarlane
+   Copyright   : Copyright (C) 2015-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -16,209 +17,102 @@ CommonMark is a strongly specified variant of Markdown: http://commonmark.org.
 module Text.Pandoc.Readers.CommonMark (readCommonMark)
 where
 
-import CMarkGFM
-import Control.Monad.State
-import qualified Data.Set as Set
+import Commonmark
+import Commonmark.Extensions
+import Commonmark.Pandoc
 import Data.Text (Text)
-import qualified Data.Text as T
 import Text.Pandoc.Class.PandocMonad (PandocMonad)
 import Text.Pandoc.Definition
-import Text.Pandoc.Emoji (emojiToInline)
+import Text.Pandoc.Builder as B
 import Text.Pandoc.Options
-import Text.Pandoc.Shared (uniqueIdent, taskListItemFromAscii)
-import Text.Pandoc.Walk (walkM)
+import Text.Pandoc.Error
+import Text.Pandoc.Readers.Metadata (yamlMetaBlock)
+import Control.Monad.Except
+import Data.Functor.Identity (runIdentity)
+import Data.Typeable
+import Text.Pandoc.Parsing (runParserT, getInput,
+                            runF, defaultParserState, option, many1, anyChar,
+                            Sources(..), ToSources(..), ParserT, Future,
+                            sourceName)
+import qualified Data.Text as T
 
 -- | Parse a CommonMark formatted string into a 'Pandoc' structure.
-readCommonMark :: PandocMonad m => ReaderOptions -> Text -> m Pandoc
-readCommonMark opts s = return $
-  (if isEnabled Ext_auto_identifiers opts
-      then addHeaderIdentifiers opts
-      else id) $
-  nodeToPandoc opts $ commonmarkToNode opts' exts s
-  where opts' = [ optSmart | isEnabled Ext_smart opts ]
-        exts = [ extStrikethrough | isEnabled Ext_strikeout opts ] ++
-               [ extTable | isEnabled Ext_pipe_tables opts ] ++
-               [ extAutolink | isEnabled Ext_autolink_bare_uris opts ]
+readCommonMark :: (PandocMonad m, ToSources a)
+               => ReaderOptions -> a -> m Pandoc
+readCommonMark opts s
+  | isEnabled Ext_yaml_metadata_block opts = do
+    let sources = toSources s
+    let toks = concatMap sourceToToks (unSources sources)
+    res <- runParserT (do meta <- yamlMetaBlock (metaValueParser opts)
+                          rest <- getInput
+                          return (meta, rest))
+                      defaultParserState "YAML metadata" (toSources s)
+    case res of
+      Left _ -> readCommonMarkBody opts sources toks
+      Right (meta, rest) -> do
+        -- strip off metadata section and parse body
+        let body = concatMap sourceToToks (unSources rest)
+        Pandoc _ bs <- readCommonMarkBody opts sources body
+        return $ Pandoc (runF meta defaultParserState) bs
+  | otherwise = do
+    let sources = toSources s
+    let toks = concatMap sourceToToks (unSources sources)
+    readCommonMarkBody opts sources toks
 
-convertEmojis :: Text -> [Inline]
-convertEmojis s@(T.uncons -> Just (':',xs)) =
-   case T.break (==':') xs of
-        (ys, T.uncons -> Just (':',zs)) ->
-           case emojiToInline ys of
-                Just em -> em : convertEmojis zs
-                Nothing -> Str (":" <> ys) : convertEmojis (":" <> zs)
-        _ -> [Str s]
-convertEmojis s =
-  case T.break (==':') s of
-    ("","") -> []
-    (_,"") -> [Str s]
-    (xs,ys) -> Str xs : convertEmojis ys
+sourceToToks :: (SourcePos, Text) -> [Tok]
+sourceToToks (pos, s) = tokenize (sourceName pos) s
 
-addHeaderIdentifiers :: ReaderOptions -> Pandoc -> Pandoc
-addHeaderIdentifiers opts doc = evalState (walkM (addHeaderId opts) doc) mempty
+metaValueParser :: Monad m
+                => ReaderOptions -> ParserT Sources st m (Future st MetaValue)
+metaValueParser opts = do
+  inp <- option "" $ T.pack <$> many1 anyChar
+  let toks = concatMap sourceToToks (unSources (toSources inp))
+  case runIdentity (parseCommonmarkWith (specFor opts) toks) of
+     Left _ -> mzero
+     Right (Cm bls :: Cm () Blocks) -> return $ return $ B.toMetaValue bls
 
-addHeaderId :: ReaderOptions -> Block -> State (Set.Set Text) Block
-addHeaderId opts (Header lev (_,classes,kvs) ils) = do
-  ids <- get
-  let ident = uniqueIdent (readerExtensions opts) ils ids
-  modify (Set.insert ident)
-  return $ Header lev (ident,classes,kvs) ils
-addHeaderId _ x = return x
+readCommonMarkBody :: PandocMonad m => ReaderOptions -> Sources -> [Tok] -> m Pandoc
+readCommonMarkBody opts s toks
+  | isEnabled Ext_sourcepos opts =
+    case runIdentity (parseCommonmarkWith (specFor opts) toks) of
+      Left err -> throwError $ PandocParsecError s err
+      Right (Cm bls :: Cm SourceRange Blocks) -> return $ B.doc bls
+  | otherwise =
+    case runIdentity (parseCommonmarkWith (specFor opts) toks) of
+      Left err -> throwError $ PandocParsecError s err
+      Right (Cm bls :: Cm () Blocks) -> return $ B.doc bls
 
-nodeToPandoc :: ReaderOptions -> Node -> Pandoc
-nodeToPandoc opts (Node _ DOCUMENT nodes) =
-  Pandoc nullMeta $ foldr (addBlock opts) [] nodes
-nodeToPandoc opts n =  -- shouldn't happen
-  Pandoc nullMeta $ foldr (addBlock opts) [] [n]
+specFor :: (Monad m, Typeable m, Typeable a,
+            Rangeable (Cm a Inlines), Rangeable (Cm a Blocks))
+        => ReaderOptions -> SyntaxSpec m (Cm a Inlines) (Cm a Blocks)
+specFor opts = foldr ($) defaultSyntaxSpec exts
+ where
+  exts = [ (hardLineBreaksSpec <>) | isEnabled Ext_hard_line_breaks opts ] ++
+         [ (smartPunctuationSpec <>) | isEnabled Ext_smart opts ] ++
+         [ (strikethroughSpec <>) | isEnabled Ext_strikeout opts ] ++
+         [ (superscriptSpec <>) | isEnabled Ext_superscript opts ] ++
+         [ (subscriptSpec <>) | isEnabled Ext_subscript opts ] ++
+         [ (mathSpec <>) | isEnabled Ext_tex_math_dollars opts ] ++
+         [ (fancyListSpec <>) | isEnabled Ext_fancy_lists opts ] ++
+         [ (fencedDivSpec <>) | isEnabled Ext_fenced_divs opts ] ++
+         [ (bracketedSpanSpec <>) | isEnabled Ext_bracketed_spans opts ] ++
+         [ (rawAttributeSpec <>) | isEnabled Ext_raw_attribute opts ] ++
+         [ (attributesSpec <>) | isEnabled Ext_attributes opts ] ++
+         [ (<> pipeTableSpec) | isEnabled Ext_pipe_tables opts ] ++
+            -- see #6739
+         [ (autolinkSpec <>) | isEnabled Ext_autolink_bare_uris opts ] ++
+         [ (emojiSpec <>) | isEnabled Ext_emoji opts ] ++
+         [ (autoIdentifiersSpec <>)
+           | isEnabled Ext_gfm_auto_identifiers opts
+           , not (isEnabled Ext_ascii_identifiers opts) ] ++
+         [ (autoIdentifiersAsciiSpec <>)
+           | isEnabled Ext_gfm_auto_identifiers opts
+           , isEnabled Ext_ascii_identifiers opts ] ++
+         [ (implicitHeadingReferencesSpec <>)
+           | isEnabled Ext_implicit_header_references opts ] ++
+         [ (footnoteSpec <>) | isEnabled Ext_footnotes opts ] ++
+         [ (definitionListSpec <>) | isEnabled Ext_definition_lists opts ] ++
+         [ (taskListSpec <>) | isEnabled Ext_task_lists opts ] ++
+         [ (rebaseRelativePathsSpec <>)
+           | isEnabled Ext_rebase_relative_paths opts ]
 
-addBlocks :: ReaderOptions -> [Node] -> [Block]
-addBlocks opts = foldr (addBlock opts) []
-
-addBlock :: ReaderOptions -> Node -> [Block] -> [Block]
-addBlock opts (Node _ PARAGRAPH nodes) =
-  case addInlines opts nodes of
-    [Image attr alt (src,tit)]
-      | isEnabled Ext_implicit_figures opts
-         -- the "fig:" prefix indicates an implicit figure
-      -> (Para [Image attr alt (src, "fig:" <> tit)] :)
-    ils -> (Para ils :)
-addBlock _ (Node _ THEMATIC_BREAK _) =
-  (HorizontalRule :)
-addBlock opts (Node _ BLOCK_QUOTE nodes) =
-  (BlockQuote (addBlocks opts nodes) :)
-addBlock opts (Node _ (HTML_BLOCK t) _)
-  | isEnabled Ext_raw_html opts = (RawBlock (Format "html") t :)
-  | otherwise                 = id
--- Note:  the cmark parser will never generate CUSTOM_BLOCK,
--- so we don't need to handle it:
-addBlock _ (Node _ (CUSTOM_BLOCK _onEnter _onExit) _nodes) =
-  id
-addBlock _ (Node _ (CODE_BLOCK info t) _) =
-  (CodeBlock ("", take 1 (T.words info), []) t :)
-addBlock opts (Node _ (HEADING lev) nodes) =
-  (Header lev ("",[],[]) (addInlines opts nodes) :)
-addBlock opts (Node _ (LIST listAttrs) nodes) =
-  (constructor (map listItem nodes) :)
-  where constructor = case listType listAttrs of
-                       BULLET_LIST  -> BulletList
-                       ORDERED_LIST -> OrderedList
-                                         (start, DefaultStyle, delim)
-        start = listStart listAttrs
-        listItem = taskListItemFromAscii exts . setTightness
-                     . addBlocks opts . children
-        setTightness = if listTight listAttrs
-                           then map paraToPlain
-                           else id
-        paraToPlain (Para xs) = Plain xs
-        paraToPlain x         = x
-        delim = case listDelim listAttrs of
-                     PERIOD_DELIM -> Period
-                     PAREN_DELIM  -> OneParen
-        exts = readerExtensions opts
-addBlock opts (Node _ (TABLE alignments) nodes) =
-  (Table
-    nullAttr
-    (Caption Nothing [])
-    (zip aligns widths)
-    (TableHead nullAttr headers)
-    [TableBody nullAttr 0 [] rows]
-    (TableFoot nullAttr []) :)
-  where aligns = map fromTableCellAlignment alignments
-        fromTableCellAlignment NoAlignment   = AlignDefault
-        fromTableCellAlignment LeftAligned   = AlignLeft
-        fromTableCellAlignment RightAligned  = AlignRight
-        fromTableCellAlignment CenterAligned = AlignCenter
-        widths = replicate numcols ColWidthDefault
-        numcols = if null rows'
-                     then 0
-                     else maximum $ map rowLength rows'
-        rows' = map toRow $ filter isRow nodes
-        (headers, rows) = case rows' of
-                               (h:rs) -> ([h], rs)
-                               []     -> ([], [])
-        isRow (Node _ TABLE_ROW _) = True
-        isRow _                    = False
-        isCell (Node _ TABLE_CELL _) = True
-        isCell _                     = False
-        toRow (Node _ TABLE_ROW ns) = Row nullAttr $ map toCell $ filter isCell ns
-        toRow (Node _ t _) = error $ "toRow encountered non-row " ++ show t
-        toCell (Node _ TABLE_CELL []) = fromSimpleCell []
-        toCell (Node _ TABLE_CELL (n:ns))
-          | isBlockNode n = fromSimpleCell $ addBlocks opts (n:ns)
-          | otherwise     = fromSimpleCell [Plain (addInlines opts (n:ns))]
-        toCell (Node _ t _) = error $ "toCell encountered non-cell " ++ show t
-        fromSimpleCell = Cell nullAttr AlignDefault 1 1
-        rowLength (Row _ body) = length body -- all cells are 1×1
-addBlock _ (Node _ TABLE_ROW _) = id -- handled in TABLE
-addBlock _ (Node _ TABLE_CELL _) = id -- handled in TABLE
-addBlock _ _ = id
-
-isBlockNode :: Node -> Bool
-isBlockNode (Node _ nodetype _) =
-  case nodetype of
-       DOCUMENT          -> True
-       THEMATIC_BREAK    -> True
-       PARAGRAPH         -> True
-       BLOCK_QUOTE       -> True
-       HTML_BLOCK _      -> True
-       CUSTOM_BLOCK _ _  -> True
-       CODE_BLOCK _ _    -> True
-       HEADING _         -> True
-       LIST _            -> True
-       ITEM              -> True
-       TEXT _            -> False
-       SOFTBREAK         -> False
-       LINEBREAK         -> False
-       HTML_INLINE _     -> False
-       CUSTOM_INLINE _ _ -> False
-       CODE _            -> False
-       EMPH              -> False
-       STRONG            -> False
-       LINK _ _          -> False
-       IMAGE _ _         -> False
-       STRIKETHROUGH     -> False
-       TABLE _           -> False
-       TABLE_ROW         -> False
-       TABLE_CELL        -> False
-
-children :: Node -> [Node]
-children (Node _ _ ns) = ns
-
-addInlines :: ReaderOptions -> [Node] -> [Inline]
-addInlines opts = foldr (addInline opts) []
-
-addInline :: ReaderOptions -> Node -> [Inline] -> [Inline]
-addInline opts (Node _ (TEXT t) _) = (concatMap toinl clumps ++)
-  where clumps = T.groupBy samekind t
-        samekind ' ' ' ' = True
-        samekind ' ' _   = False
-        samekind _   ' ' = False
-        samekind _  _    = True
-        toinl (T.uncons -> Just (' ', _)) = [Space]
-        toinl xs = if isEnabled Ext_emoji opts
-                   then convertEmojis xs
-                   else [Str xs]
-addInline _ (Node _ LINEBREAK _) = (LineBreak :)
-addInline opts (Node _ SOFTBREAK _)
-  | isEnabled Ext_hard_line_breaks opts = (LineBreak :)
-  | otherwise                           = (SoftBreak :)
-addInline opts (Node _ (HTML_INLINE t) _)
-  | isEnabled Ext_raw_html opts = (RawInline (Format "html") t :)
-  | otherwise                 = id
--- Note:  the cmark parser will never generate CUSTOM_BLOCK,
--- so we don't need to handle it:
-addInline _ (Node _ (CUSTOM_INLINE _onEnter _onExit) _nodes) =
-  id
-addInline _ (Node _ (CODE t) _) =
-  (Code ("",[],[]) t :)
-addInline opts (Node _ EMPH nodes) =
-  (Emph (addInlines opts nodes) :)
-addInline opts (Node _ STRONG nodes) =
-  (Strong (addInlines opts nodes) :)
-addInline opts (Node _ STRIKETHROUGH nodes) =
-  (Strikeout (addInlines opts nodes) :)
-addInline opts (Node _ (LINK url title) nodes) =
-  (Link nullAttr (addInlines opts nodes) (url, title) :)
-addInline opts (Node _ (IMAGE url title) nodes) =
-  (Image nullAttr (addInlines opts nodes) (url, title) :)
-addInline _ _ = id

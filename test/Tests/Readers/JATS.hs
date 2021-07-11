@@ -1,4 +1,3 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Tests.Readers.JATS
@@ -13,13 +12,14 @@ Tests for the JATS reader.
 -}
 module Tests.Readers.JATS (tests) where
 
-import Prelude
 import Data.Text (Text)
 import Test.Tasty
 import Tests.Helpers
 import Text.Pandoc
 import Text.Pandoc.Arbitrary ()
 import Text.Pandoc.Builder
+
+import qualified Data.Text as T
 
 jats :: Text -> Pandoc
 jats = purely $ readJATS def
@@ -88,6 +88,7 @@ tests = [ testGroup "inline code"
             "<p>\n\
             \  <inline-formula><alternatives>\n\
             \  <tex-math><![CDATA[\\sigma|_{\\{x\\}}]]></tex-math>\n\
+            \  </alternatives></inline-formula>\n\
             \</p>"
             =?> para (math "\\sigma|_{\\{x\\}}")
           , test jats "math ml only" $
@@ -125,5 +126,20 @@ tests = [ testGroup "inline code"
             \  <title><inline-graphic mimetype=\"image\" mime-subtype=\"jpeg\" xlink:href=\"imgs/foo.jpg\" /></title>\n\
             \</sec>"
             =?> header 1 (image "imgs/foo.jpg" "" mempty)
+          ]
+
+        , testGroup "metadata"
+          [ test jats "abstract" $
+            T.unlines [ "<front>"
+                      , "<article-meta>"
+                      , "<abstract>"
+                      , "<p>Paragraph 1</p>"
+                      , "<p>Paragraph 2</p>"
+                      , "</abstract>"
+                      , "</article-meta>"
+                      , "</front>"
+                      ] =?>
+            let abstract = para "Paragraph 1" <> para "Paragraph 2"
+            in setMeta "abstract" abstract $ doc mempty
           ]
         ]

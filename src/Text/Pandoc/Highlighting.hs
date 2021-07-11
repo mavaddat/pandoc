@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Highlighting
-   Copyright   : Copyright (C) 2008-2020 John MacFarlane
+   Copyright   : Copyright (C) 2008-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -52,12 +52,12 @@ highlightingStyles =
    ("breezedark", breezeDark),
    ("haddock", haddock)]
 
-languages :: [T.Text]
-languages = [T.toLower (sName s) | s <- M.elems defaultSyntaxMap]
+languages :: SyntaxMap -> [T.Text]
+languages syntaxmap = [T.toLower (sName s) | s <- M.elems syntaxmap]
 
-languagesByExtension :: T.Text -> [T.Text]
-languagesByExtension ext =
-  [T.toLower (sName s) | s <- syntaxesByExtension defaultSyntaxMap (T.unpack ext)]
+languagesByExtension :: SyntaxMap -> T.Text -> [T.Text]
+languagesByExtension syntaxmap ext =
+  [T.toLower (sName s) | s <- syntaxesByExtension syntaxmap (T.unpack ext)]
 
 highlight :: SyntaxMap
           -> (FormatOptions -> [SourceLine] -> a) -- ^ Formatter

@@ -1,7 +1,5 @@
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RelaxedPolyRec    #-}
--- RelaxedPolyRec needed for inlinesBetween on GHC < 7
 {- |
    Module      : Text.Pandoc.Readers.TWiki
    Copyright   : Copyright (C) 2014 Alexander Sulfrian
@@ -30,22 +28,22 @@ import Text.Pandoc.Definition
 import Text.Pandoc.Options
 import Text.Pandoc.Parsing hiding (enclosed, nested)
 import Text.Pandoc.Readers.HTML (htmlTag, isCommentTag)
-import Text.Pandoc.Shared (crFilter, tshow)
+import Text.Pandoc.Shared (tshow)
 import Text.Pandoc.XML (fromEntities)
 
 -- | Read twiki from an input string and return a Pandoc document.
-readTWiki :: PandocMonad m
+readTWiki :: (PandocMonad m, ToSources a)
           => ReaderOptions
-          -> Text
+          -> a
           -> m Pandoc
 readTWiki opts s = do
-  res <- readWithM parseTWiki def{ stateOptions = opts }
-             (crFilter s <> "\n\n")
+  let sources = ensureFinalNewlines 2 (toSources s)
+  res <- readWithM parseTWiki def{ stateOptions = opts } sources
   case res of
        Left e  -> throwError e
        Right d -> return d
 
-type TWParser = ParserT Text ParserState
+type TWParser = ParserT Sources ParserState
 
 --
 -- utility functions
@@ -216,7 +214,7 @@ listItemLine prefix marker = mconcat <$> (lineContent >>= parseContent)
     listContinuation = notFollowedBy (textStr prefix >> marker) >>
                        string "   " >> lineContent
     parseContent = parseFromString' $ many1 $ nestedList <|> parseInline
-    parseInline = (B.plain . mconcat) <$> many1Till inline (lastNewline <|> newlineBeforeNestedList)
+    parseInline = B.plain . mconcat <$> many1Till inline (lastNewline <|> newlineBeforeNestedList)
     nestedList = list prefix
     lastNewline = try $ char '\n' <* eof
     newlineBeforeNestedList = try $ char '\n' <* lookAhead nestedList
@@ -237,7 +235,7 @@ table = try $ do
     columns rows    = replicate (columCount rows) mempty
     columCount rows = length $ head rows
     toRow           = Row nullAttr . map B.simpleCell
-    toHeaderRow l = if null l then [] else [toRow l]
+    toHeaderRow l = [toRow l | not (null l)]
 
 tableParseHeader :: PandocMonad m => TWParser m ((Alignment, ColWidth), B.Blocks)
 tableParseHeader = try $ do
@@ -267,13 +265,13 @@ tableEndOfRow :: PandocMonad m => TWParser m Char
 tableEndOfRow = lookAhead (try $ char '|' >> char '\n') >> char '|'
 
 tableColumnContent :: PandocMonad m => TWParser m a -> TWParser m B.Blocks
-tableColumnContent end = (B.plain . mconcat) <$> manyTill content (lookAhead $ try end)
+tableColumnContent end = B.plain . mconcat <$> manyTill content (lookAhead $ try end)
   where
     content = continuation <|> inline
     continuation = try $ char '\\' >> newline >> return mempty
 
 blockQuote :: PandocMonad m => TWParser m B.Blocks
-blockQuote = (B.blockQuote . mconcat) <$> parseHtmlContent "blockquote" block
+blockQuote = B.blockQuote . mconcat <$> parseHtmlContent "blockquote" block
 
 noautolink :: PandocMonad m => TWParser m B.Blocks
 noautolink = do
@@ -287,7 +285,7 @@ noautolink = do
     parseContent = parseFromString' $ many block
 
 para :: PandocMonad m => TWParser m B.Blocks
-para = (result . mconcat) <$> many1Till inline endOfParaElement
+para = result . mconcat <$> many1Till inline endOfParaElement
  where
    endOfParaElement = lookAhead $ endOfInput <|> endOfPara <|> newBlockElement
    endOfInput       = try $ skipMany blankline >> skipSpaces >> eof
@@ -430,13 +428,13 @@ nestedString end = innerSpace <|> countChar 1 nonspaceChar
     innerSpace = try $ many1Char spaceChar <* notFollowedBy end
 
 boldCode :: PandocMonad m => TWParser m B.Inlines
-boldCode = try $ (B.strong . B.code . fromEntities) <$> enclosed (string "==") nestedString
+boldCode = try $ B.strong . B.code . fromEntities <$> enclosed (string "==") nestedString
 
 htmlComment :: PandocMonad m => TWParser m B.Inlines
 htmlComment = htmlTag isCommentTag >> return mempty
 
 code :: PandocMonad m => TWParser m B.Inlines
-code = try $ (B.code . fromEntities) <$> enclosed (char '=') nestedString
+code = try $ B.code . fromEntities <$> enclosed (char '=') nestedString
 
 codeHtml :: PandocMonad m => TWParser m B.Inlines
 codeHtml = do
@@ -471,27 +469,7 @@ symbol :: PandocMonad m => TWParser m B.Inlines
 symbol = B.str <$> countChar 1 nonspaceChar
 
 smart :: PandocMonad m => TWParser m B.Inlines
-smart = do
-  guardEnabled Ext_smart
-  doubleQuoted <|> singleQuoted <|>
-    choice [ apostrophe
-           , dash
-           , ellipses
-           ]
-
-singleQuoted :: PandocMonad m => TWParser m B.Inlines
-singleQuoted = try $ do
-  singleQuoteStart
-  withQuoteContext InSingleQuote
-    (B.singleQuoted . B.trimInlines . mconcat <$> many1Till inline singleQuoteEnd)
-
-doubleQuoted :: PandocMonad m => TWParser m B.Inlines
-doubleQuoted = try $ do
-  doubleQuoteStart
-  contents <- mconcat <$> many (try $ notFollowedBy doubleQuoteEnd >> inline)
-  withQuoteContext InDoubleQuote (doubleQuoteEnd >>
-   return (B.doubleQuoted $ B.trimInlines contents))
-   <|> return (B.str "\8220" B.<> contents)
+smart = smartPunctuation inline
 
 link :: PandocMonad m => TWParser m B.Inlines
 link = try $ do

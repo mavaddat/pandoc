@@ -1,8 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Tests.Readers.LaTeX
-   Copyright   : © 2006-2020 John MacFarlane
+   Copyright   : © 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -13,14 +12,9 @@ Tests for the LaTeX reader.
 -}
 module Tests.Readers.LaTeX (tests) where
 
-import Prelude
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Text.Pandoc.UTF8 as UTF8
-import Text.Pandoc.Readers.LaTeX (tokenize, untokenize)
 import Test.Tasty
-import Test.Tasty.HUnit
-import Test.Tasty.QuickCheck
 import Tests.Helpers
 import Text.Pandoc
 import Text.Pandoc.Arbitrary ()
@@ -35,31 +29,22 @@ infix 4 =:
      => String -> (Text, c) -> TestTree
 (=:) = test latex
 
-simpleTable' :: [Alignment] -> [[Blocks]] -> Blocks
-simpleTable' aligns rows
+table' :: [Alignment] -> [Row] -> Blocks
+table' aligns rows
   = table emptyCaption
           (zip aligns (repeat ColWidthDefault))
           (TableHead nullAttr [])
-          [TableBody nullAttr 0 [] $ map toRow rows]
+          [TableBody nullAttr 0 [] rows]
           (TableFoot nullAttr [])
+
+simpleTable' :: [Alignment] -> [[Blocks]] -> Blocks
+simpleTable' aligns rows
+  = table' aligns (map toRow rows)
   where
     toRow = Row nullAttr . map simpleCell
 
-tokUntokRt :: String -> Bool
-tokUntokRt s = untokenize (tokenize "random" t) == t
-  where t = T.pack s
-
 tests :: [TestTree]
-tests = [ testGroup "tokenization"
-          [ testCase "tokenizer round trip on test case" $ do
-                 orig <- T.pack <$> UTF8.readFile "../test/latex-reader.latex"
-                 let new = untokenize $ tokenize "../test/latex-reader.latex"
-                             orig
-                 assertEqual "untokenize . tokenize is identity" orig new
-          , testProperty "untokenize . tokenize is identity" tokUntokRt
-          ]
-
-        , testGroup "basic"
+tests = [ testGroup "basic"
           [ "simple" =:
             "word" =?> para "word"
           , "space" =:
@@ -137,6 +122,90 @@ tests = [ testGroup "tokenization"
           , "Table with vertical alignment argument" =:
             "\\begin{tabular}[t]{r|r}One & Two\\\\ \\end{tabular}" =?>
             simpleTable' [AlignRight,AlignRight] [[plain "One", plain "Two"]]
+          , "Table with multicolumn item" =:
+            "\\begin{tabular}{l c r}\\multicolumn{2}{c}{One} & Two\\\\ \\end{tabular}" =?>
+            table' [AlignLeft, AlignCenter, AlignRight]
+                   [ Row nullAttr [ cell AlignCenter (RowSpan 1) (ColSpan 2) (plain "One")
+                                  , simpleCell (plain "Two")
+                                  ]
+                   ]
+          , "table with multicolumn item (#6596)" =:
+            "\\begin{tabular}{l c r}One & \\multicolumn{2}{c}{Two} & \\\\ \\end{tabular}" =?>
+            table' [AlignLeft, AlignCenter, AlignRight]
+                   [ Row nullAttr [ simpleCell (plain "One")
+                                  , cell AlignCenter (RowSpan 1) (ColSpan 2) (plain "Two")
+                                  ]
+                   ]
+          , "Table with multirow item" =:
+            T.unlines ["\\begin{tabular}{c}"
+                      ,"\\multirow{2}{5em}{One}\\\\Two\\\\"
+                      ,"\\end{tabular}"
+                      ] =?>
+            table' [AlignCenter]
+                  [ Row nullAttr [ cell AlignDefault (RowSpan 2) (ColSpan 1) (plain "One") ]
+                  , Row nullAttr [ simpleCell (plain "Two") ]
+                  ]
+          , "Table with multirow item using full prototype" =:
+            T.unlines ["\\begin{tabular}{c}"
+                      ,"\\multirow[c]{2}[3]{5em}[1in]{One}\\\\Two\\\\"
+                      ,"\\end{tabular}"
+                      ] =?>
+            table' [AlignCenter]
+                  [ Row nullAttr [ cell AlignDefault (RowSpan 2) (ColSpan 1) (plain "One") ]
+                  , Row nullAttr [ simpleCell (plain "Two") ]
+                  ]
+          , "Table with nested multirow/multicolumn item" =:
+            T.unlines [ "\\begin{tabular}{c c c c}"
+                      , "\\multicolumn{3}{c}{\\multirow{2}{5em}{One}}&Two\\\\"
+                      , "\\multicolumn{2}{c}{} & & Three\\\\"
+                      , "Four&Five&Six&Seven\\\\"
+                      , "\\end{tabular}"
+                      ] =?>
+            table' [AlignCenter, AlignCenter, AlignCenter, AlignCenter]
+                   [ Row nullAttr [ cell AlignCenter (RowSpan 2) (ColSpan 3) (plain "One")
+                                  , simpleCell (plain "Two")
+                                  ]
+                   , Row nullAttr [ simpleCell (plain "Three") ]
+                   , Row nullAttr [ simpleCell (plain "Four") 
+                                  , simpleCell (plain "Five")
+                                  , simpleCell (plain "Six")
+                                  , simpleCell (plain "Seven")
+                                  ]
+                   ]
+          , "Table with multicolumn header" =:
+            T.unlines [ "\\begin{tabular}{ |l|l| }"
+                      , "\\hline\\multicolumn{2}{|c|}{Header}\\\\" 
+                      , "\\hline key & val\\\\" 
+                      , "\\hline\\end{tabular}"
+                      ] =?>
+            table emptyCaption
+                  (zip [AlignLeft, AlignLeft] (repeat ColWidthDefault))
+                  (TableHead nullAttr [ Row nullAttr [cell AlignCenter (RowSpan 1) (ColSpan 2) (plain "Header")]])
+                  [TableBody nullAttr 0 [] [Row nullAttr [ simpleCell (plain "key")
+                                                         , simpleCell (plain "val")
+                                                         ]
+                                           ]
+                  ]
+                  (TableFoot nullAttr [])
+          , "Table with normal empty cells" =:
+            T.unlines [ "\\begin{tabular}{|r|r|r|}"
+                      , "A &   & B \\\\"
+                      , "  & C &"
+                      , "\\end{tabular}"
+                      ] =?>
+            table emptyCaption
+                  (replicate 3 (AlignRight, ColWidthDefault))
+                  (TableHead nullAttr [])
+                  [TableBody nullAttr 0 []
+                    [Row nullAttr [ simpleCell (plain "A")
+                                  , emptyCell
+                                  , simpleCell (plain "B")
+                                  ]
+                    ,Row nullAttr [ emptyCell
+                                  , simpleCell (plain "C")
+                                  , emptyCell
+                                  ]]]
+                  (TableFoot nullAttr [])
           ]
 
         , testGroup "citations"

@@ -1,8 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Main
-   Copyright   : © 2014-2020 John MacFarlane <jgm@berkeley.edu>
+   Copyright   : © 2014-2021 John MacFarlane <jgm@berkeley.edu>
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -12,26 +11,22 @@
 Provides a webservice which allows to try pandoc in the browser.
 -}
 module Main where
-import Prelude
 import Network.Wai.Handler.CGI
+import Network.Wai.Middleware.Timeout (timeout)
 import Network.Wai
-import Control.Applicative ((<$>))
 import Data.Maybe (fromMaybe)
 import Network.HTTP.Types.Status (status200)
 import Network.HTTP.Types.Header (hContentType)
 import Network.HTTP.Types.URI (queryToQueryText)
 import Text.Pandoc
-import Text.Pandoc.Writers.Math (defaultMathJaxURL)
 import Text.Pandoc.Highlighting (pygments)
-import Text.Pandoc.Readers (getReader, Reader(..))
-import Text.Pandoc.Writers (getWriter, Writer(..))
 import Text.Pandoc.Shared (tabFilter)
 import Data.Aeson
 import qualified Data.Text as T
 import Data.Text (Text)
 
 main :: IO ()
-main = run app
+main = run $ timeout 2 app
 
 app :: Application
 app req respond = do
@@ -74,8 +69,7 @@ checkLength t =
 writerOpts :: WriterOptions
 writerOpts = def { writerReferenceLinks = True,
                    writerEmailObfuscation = NoObfuscation,
-                   writerHTMLMathMethod = MathJax (defaultMathJaxURL <>
-                       T.pack "tex-mml-chtml.js"),
+                   writerHTMLMathMethod = MathJax defaultMathJaxURL,
                    writerHighlightStyle = Just pygments }
 
 readerOpts :: ReaderOptions

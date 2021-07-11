@@ -1,7 +1,14 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <!DOCTYPE article PUBLIC "-//OASIS//DTD DocBook XML V4.4//EN"
-                  "http://www.oasis-open.org/docbook/xml/4.4/docbookx.dtd">
-<article>
+"http://www.oasis-open.org/docbook/xml/4.4/docbookx.dtd"
+[
+<!ENTITY GHC "GHC" >
+<!ENTITY let "LET" >
+<!ENTITY case "CASE" >
+]>
+<article xmlns="http://docbook.org/ns/docbook"
+         xmlns:xlink="http://www.w3.org/1999/xlink"
+         xmlns:mml="http://www.w3.org/1998/Math/MathML">
   <articleinfo>
     <title>Pandoc Test Suite</title>
     <authorgroup>
@@ -47,6 +54,12 @@
       <para>
         with no blank line
       </para>
+      <simplesect>
+        <title>Level 4</title>
+        <para>
+        An unnumbered section.
+        </para>
+      </simplesect>
     </sect3>
   </sect2>
   <sect2 id="level-2">
@@ -711,6 +724,9 @@ These should not be escaped:  \$ \\ \&gt; \[ \{
   </para>
   <para>
     More code: <classname>Class</classname> and <type>Type</type>
+  </para>
+  <para>
+    Referencing a man page: <citerefentry><refentrytitle>nix.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
   </para>
   <para>
     <emphasis role="strikethrough">This is
@@ -1557,5 +1573,29 @@ or here: &lt;http://example.com/&gt;
       </tbody>
     </tgroup>
   </informaltable>
+  <procedure><title>An Example Procedure</title>
+    <step>
+      <para>
+        A Step
+      </para>
+    </step>
+    <step>
+      <para>
+        Another Step
+      </para>
+      <substeps>
+        <step>
+          <para>
+            Substeps can be nested indefinitely deep.
+          </para>
+        </step>
+      </substeps>
+    </step>
+    <step>
+      <para>
+        A Final Step
+      </para>
+    </step>
+  </procedure>
 </sect1>
 </article>

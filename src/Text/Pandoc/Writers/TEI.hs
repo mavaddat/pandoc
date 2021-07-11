@@ -2,7 +2,7 @@
 {-# LANGUAGE PatternGuards     #-}
 {- |
    Module      : Text.Pandoc.Writers.Docbook
-   Copyright   : Copyright (C) 2006-2020 John MacFarlane
+   Copyright   : Copyright (C) 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -146,16 +146,17 @@ blockToTEI opts (LineBlock lns) =
   blockToTEI opts $ linesToPara lns
 blockToTEI opts (BlockQuote blocks) =
   inTagsIndented "quote" <$> blocksToTEI opts blocks
-blockToTEI _ (CodeBlock (_,classes,_) str) =
+blockToTEI opts (CodeBlock (_,classes,_) str) =
   return $ literal ("<ab type='codeblock " <> lang <> "'>") <> cr <>
      flush (literal (escapeStringForXML str) <> cr <> text "</ab>")
     where lang  = if null langs
                      then ""
                      else escapeStringForXML (head langs)
-          isLang l    = T.toLower l `elem` map T.toLower languages
+          syntaxMap = writerSyntaxMap opts
+          isLang l    = T.toLower l `elem` map T.toLower (languages syntaxMap)
           langsFrom s = if isLang s
                            then [s]
-                           else languagesByExtension . T.toLower $ s
+                           else (languagesByExtension syntaxMap) . T.toLower $ s
           langs       = concatMap langsFrom classes
 blockToTEI opts (BulletList lst) = do
   let attribs = [("type", "unordered")]
@@ -205,14 +206,14 @@ tableRowToTEI :: PandocMonad m
               -> [[Block]]
               -> m (Doc Text)
 tableRowToTEI opts cols =
-  (inTagsIndented "row" . vcat) <$> mapM (tableItemToTEI opts) cols
+  inTagsIndented "row" . vcat <$> mapM (tableItemToTEI opts) cols
 
 tableHeadersToTEI :: PandocMonad m
                   => WriterOptions
                   -> [[Block]]
                   -> m (Doc Text)
 tableHeadersToTEI opts cols =
-  (inTags True "row" [("role","label")] . vcat) <$>
+  inTags True "row" [("role","label")] . vcat <$>
     mapM (tableItemToTEI opts) cols
 
 tableItemToTEI :: PandocMonad m
@@ -220,7 +221,7 @@ tableItemToTEI :: PandocMonad m
                -> [Block]
                -> m (Doc Text)
 tableItemToTEI opts item =
-  (inTags False "cell" [] . vcat) <$> mapM (blockToTEI opts) item
+  inTags False "cell" [] . vcat <$> mapM (blockToTEI opts) item
 
 -- | Convert a list of inline elements to TEI.
 inlinesToTEI :: PandocMonad m => WriterOptions -> [Inline] -> m (Doc Text)

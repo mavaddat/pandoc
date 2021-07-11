@@ -33,7 +33,9 @@ module Text.Pandoc.Readers.Docx.Parse ( Docx(..)
                                       , ParStyle
                                       , CharStyle(cStyleData)
                                       , Row(..)
+                                      , TblHeader(..)
                                       , Cell(..)
+                                      , VMerge(..)
                                       , TrackedChange(..)
                                       , ChangeType(..)
                                       , ChangeInfo(..)
@@ -50,6 +52,7 @@ module Text.Pandoc.Readers.Docx.Parse ( Docx(..)
                                       , pHeading
                                       , constructBogusParStyleData
                                       , leftBiasedMergeRunStyle
+                                      , rowsToRowspans
                                       ) where
 import Text.Pandoc.Readers.Docx.Parse.Styles
 import Codec.Archive.Zip
@@ -63,6 +66,7 @@ import Data.Char (chr, ord, readLitChar)
 import Data.List
 import qualified Data.Map as M
 import qualified Data.Text as T
+import Data.Text (Text)
 import Data.Maybe
 import System.FilePath
 import Text.Pandoc.Readers.Docx.Util
@@ -72,8 +76,7 @@ import qualified Text.Pandoc.UTF8 as UTF8
 import Text.TeXMath (Exp)
 import Text.TeXMath.Readers.OMML (readOMML)
 import Text.TeXMath.Unicode.Fonts (Font (..), getUnicode, textToFont)
-import Text.XML.Light
-import qualified Text.XML.Light.Cursor as XMLC
+import Text.Pandoc.XML.Light
 
 data ReaderEnv = ReaderEnv { envNotes         :: Notes
                            , envComments      :: Comments
@@ -127,37 +130,23 @@ mapD f xs =
   in
    concatMapM handler xs
 
-unwrap :: NameSpaces -> Content -> [Content]
-unwrap ns (Elem element)
+unwrapElement :: NameSpaces -> Element -> [Element]
+unwrapElement ns element
   | isElem ns "w" "sdt" element
   , Just sdtContent <- findChildByName ns "w" "sdtContent" element
-  = concatMap (unwrap ns . Elem) (elChildren sdtContent)
+  = concatMap (unwrapElement ns) (elChildren sdtContent)
   | isElem ns "w" "smartTag" element
-  = concatMap (unwrap ns . Elem) (elChildren element)
-unwrap _ content = [content]
+  = concatMap (unwrapElement ns) (elChildren element)
+  | otherwise
+  = [element{ elContent = concatMap (unwrapContent ns) (elContent element) }]
 
-unwrapChild :: NameSpaces -> Content -> Content
-unwrapChild ns (Elem element) =
-  Elem $ element { elContent = concatMap (unwrap ns) (elContent element) }
-unwrapChild _ content = content
+unwrapContent :: NameSpaces -> Content -> [Content]
+unwrapContent ns (Elem element) = map Elem $ unwrapElement ns element
+unwrapContent _ content = [content]
 
-walkDocument' :: NameSpaces -> XMLC.Cursor -> XMLC.Cursor
-walkDocument' ns cur =
-  let modifiedCur = XMLC.modifyContent (unwrapChild ns) cur
-  in
-    case XMLC.nextDF modifiedCur of
-      Just cur' -> walkDocument' ns cur'
-      Nothing   -> XMLC.root modifiedCur
-
-walkDocument :: NameSpaces -> Element -> Maybe Element
+walkDocument :: NameSpaces -> Element -> Element
 walkDocument ns element =
-  let cur = XMLC.fromContent (Elem element)
-      cur' = walkDocument' ns cur
-  in
-    case XMLC.toTree cur' of
-      Elem element' -> Just element'
-      _             -> Nothing
-
+  element{ elContent = concatMap (unwrapContent ns) (elContent element) }
 
 newtype Docx = Docx Document
           deriving Show
@@ -213,7 +202,7 @@ data ParIndentation = ParIndentation { leftParIndent    :: Maybe Integer
 data ChangeType = Insertion | Deletion
                 deriving Show
 
-data ChangeInfo = ChangeInfo ChangeId Author ChangeDate
+data ChangeInfo = ChangeInfo ChangeId Author (Maybe ChangeDate)
                 deriving Show
 
 data TrackedChange = TrackedChange ChangeType ChangeInfo
@@ -239,6 +228,7 @@ defaultParagraphStyle = ParagraphStyle { pStyle = []
 data BodyPart = Paragraph ParagraphStyle [ParPart]
               | ListItem ParagraphStyle T.Text T.Text (Maybe Level) [ParPart]
               | Tbl T.Text TblGrid TblLook [Row]
+              | TblCaption ParagraphStyle [ParPart]
               | OMathPara [Exp]
               deriving Show
 
@@ -250,19 +240,71 @@ newtype TblLook = TblLook {firstRowFormatting::Bool}
 defaultTblLook :: TblLook
 defaultTblLook = TblLook{firstRowFormatting = False}
 
-newtype Row = Row [Cell]
-           deriving Show
+data Row = Row TblHeader [Cell] deriving Show
 
-newtype Cell = Cell [BodyPart]
+data TblHeader = HasTblHeader | NoTblHeader deriving (Show, Eq)
+
+data Cell = Cell GridSpan VMerge [BodyPart]
             deriving Show
+
+type GridSpan = Integer
+
+data VMerge = Continue
+            -- ^ This cell should be merged with the one above it
+            | Restart
+            -- ^ This cell should not be merged with the one above it
+            deriving (Show, Eq)
+
+rowsToRowspans :: [Row] -> [[(Int, Cell)]]
+rowsToRowspans rows = let
+  removeMergedCells = fmap (filter (\(_, Cell _ vmerge _) -> vmerge == Restart))
+  in removeMergedCells (foldr f [] rows)
+  where
+    f :: Row -> [[(Int, Cell)]] -> [[(Int, Cell)]]
+    f (Row _ cells) acc = let
+      spans = g cells Nothing (listToMaybe acc)
+      in spans : acc
+
+    g ::
+      -- | The current row
+      [Cell] ->
+      -- | Number of columns left below
+      Maybe Integer ->
+      -- | (rowspan so far, cell) for the row below this one
+      Maybe [(Int, Cell)] ->
+      -- | (rowspan so far, cell) for this row
+      [(Int, Cell)]
+    g cells _ Nothing = zip (repeat 1) cells
+    g cells columnsLeftBelow (Just rowBelow) =
+        case cells of
+          [] -> []
+          thisCell@(Cell thisGridSpan _ _) : restOfRow -> case rowBelow of
+            [] -> zip (repeat 1) cells
+            (spanSoFarBelow, Cell gridSpanBelow vmerge _) : _ ->
+              let spanSoFar = case vmerge of
+                    Restart -> 1
+                    Continue -> 1 + spanSoFarBelow
+                  columnsToDrop = thisGridSpan + (gridSpanBelow - fromMaybe gridSpanBelow columnsLeftBelow)
+                  (newColumnsLeftBelow, restOfRowBelow) = dropColumns columnsToDrop rowBelow
+              in (spanSoFar, thisCell) : g restOfRow (Just newColumnsLeftBelow) (Just restOfRowBelow)
+
+    dropColumns :: Integer -> [(a, Cell)] -> (Integer, [(a, Cell)])
+    dropColumns n [] = (n, [])
+    dropColumns n cells@((_, Cell gridSpan _ _) : otherCells) =
+      if n < gridSpan
+      then (gridSpan - n, cells)
+      else dropColumns (n - gridSpan) otherCells
 
 leftBiasedMergeRunStyle :: RunStyle -> RunStyle -> RunStyle
 leftBiasedMergeRunStyle a b = RunStyle
     { isBold = isBold a <|> isBold b
+    , isBoldCTL = isBoldCTL a <|> isBoldCTL b
     , isItalic = isItalic a <|> isItalic b
+    , isItalicCTL = isItalicCTL a <|> isItalicCTL b
     , isSmallCaps = isSmallCaps a <|> isSmallCaps b
     , isStrike = isStrike a <|> isStrike b
     , isRTL = isRTL a <|> isRTL b
+    , isForceCTL = isForceCTL a <|> isForceCTL b
     , rVertAlign = rVertAlign a <|> rVertAlign b
     , rUnderline = rUnderline a <|> rUnderline b
     , rParentStyle = rParentStyle a
@@ -273,7 +315,7 @@ type Extent = Maybe (Double, Double)
 
 data ParPart = PlainRun Run
              | ChangedRuns TrackedChange [Run]
-             | CommentStart CommentId Author CommentDate [BodyPart]
+             | CommentStart CommentId Author (Maybe CommentDate) [BodyPart]
              | CommentEnd CommentId
              | BookMark BookMarkId Anchor
              | InternalHyperLink Anchor [Run]
@@ -340,10 +382,16 @@ archiveToDocxWithWarnings archive = do
     Right doc -> Right (Docx doc, stateWarnings st)
     Left e    -> Left e
 
+parseXMLFromEntry :: Entry -> Maybe Element
+parseXMLFromEntry entry =
+  case parseXMLElement (UTF8.toTextLazy (fromEntry entry)) of
+    Left _   -> Nothing
+    Right el -> Just el
+
 getDocumentXmlPath :: Archive -> Maybe FilePath
 getDocumentXmlPath zf = do
   entry <- findEntryByPath "_rels/.rels" zf
-  relsElem <- (parseXMLDoc . UTF8.toStringLazy . fromEntry) entry
+  relsElem <- parseXMLFromEntry entry
   let rels = filterChildrenName (\n -> qName n == "Relationship") relsElem
   rel <- find (\e -> findAttr (QName "Type" Nothing Nothing) e ==
                        Just "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument")
@@ -351,18 +399,18 @@ getDocumentXmlPath zf = do
   fp <- findAttr (QName "Target" Nothing Nothing) rel
   -- sometimes there will be a leading slash, which windows seems to
   -- have trouble with.
-  return $ case fp of
+  return $ case T.unpack fp of
     '/' : fp' -> fp'
-    _         -> fp
+    fp'       -> fp'
 
 archiveToDocument :: Archive -> D Document
 archiveToDocument zf = do
   docPath <- asks envDocXmlPath
   entry <- maybeToD $ findEntryByPath docPath zf
-  docElem <- maybeToD $ (parseXMLDoc . UTF8.toStringLazy . fromEntry) entry
+  docElem <- maybeToD $ parseXMLFromEntry entry
   let namespaces = elemToNameSpaces docElem
   bodyElem <- maybeToD $ findChildByName namespaces "w" "body" docElem
-  let bodyElem' = fromMaybe bodyElem (walkDocument namespaces bodyElem)
+  let bodyElem' = walkDocument namespaces bodyElem
   body <- elemToBody namespaces bodyElem'
   return $ Document namespaces body
 
@@ -398,29 +446,24 @@ constructBogusParStyleData stName = ParStyle
 archiveToNotes :: Archive -> Notes
 archiveToNotes zf =
   let fnElem = findEntryByPath "word/footnotes.xml" zf
-               >>= (parseXMLDoc . UTF8.toStringLazy . fromEntry)
+               >>= parseXMLFromEntry
       enElem = findEntryByPath "word/endnotes.xml" zf
-               >>= (parseXMLDoc . UTF8.toStringLazy . fromEntry)
-      fn_namespaces = case fnElem of
-        Just e  -> elemToNameSpaces e
-        Nothing -> []
-      en_namespaces = case enElem of
-        Just e  -> elemToNameSpaces e
-        Nothing -> []
-      ns = unionBy (\x y -> fst x == fst y) fn_namespaces en_namespaces
-      fn = fnElem >>= walkDocument ns >>= elemToNotes ns "footnote"
-      en = enElem >>= walkDocument ns >>= elemToNotes ns "endnote"
+               >>= parseXMLFromEntry
+      fn_namespaces = maybe mempty elemToNameSpaces fnElem
+      en_namespaces = maybe mempty elemToNameSpaces enElem
+      ns = M.union fn_namespaces en_namespaces
+      fn = fnElem >>= elemToNotes ns "footnote" . walkDocument ns
+      en = enElem >>= elemToNotes ns "endnote" . walkDocument ns
   in
    Notes ns fn en
 
 archiveToComments :: Archive -> Comments
 archiveToComments zf =
   let cmtsElem = findEntryByPath "word/comments.xml" zf
-               >>= (parseXMLDoc . UTF8.toStringLazy . fromEntry)
-      cmts_namespaces = case cmtsElem of
-        Just e  -> elemToNameSpaces e
-        Nothing -> []
-      cmts = elemToComments cmts_namespaces <$> (cmtsElem >>= walkDocument cmts_namespaces)
+               >>= parseXMLFromEntry
+      cmts_namespaces = maybe mempty elemToNameSpaces cmtsElem
+      cmts = elemToComments cmts_namespaces . walkDocument cmts_namespaces <$>
+               cmtsElem
   in
     case cmts of
       Just c  -> Comments cmts_namespaces c
@@ -436,20 +479,26 @@ filePathToRelType path docXmlPath =
   then Just InDocument
   else Nothing
 
-relElemToRelationship :: DocumentLocation -> Element -> Maybe Relationship
-relElemToRelationship relType element | qName (elName element) == "Relationship" =
+relElemToRelationship :: FilePath -> DocumentLocation -> Element
+                      -> Maybe Relationship
+relElemToRelationship fp relType element | qName (elName element) == "Relationship" =
   do
-    relId <- findAttrText (QName "Id" Nothing Nothing) element
-    target <- findAttrText (QName "Target" Nothing Nothing) element
-    return $ Relationship relType relId target
-relElemToRelationship _ _ = Nothing
+    relId <- findAttr (QName "Id" Nothing Nothing) element
+    target <- findAttr (QName "Target" Nothing Nothing) element
+    -- target may be relative (media/image1.jpeg) or absolute
+    -- (/word/media/image1.jpeg); we need to relativize it (see #7374)
+    let frontOfFp = T.pack $ takeWhile (/= '_') fp
+    let target' = fromMaybe target $
+           T.stripPrefix frontOfFp $ T.dropWhile (== '/') target
+    return $ Relationship relType relId target'
+relElemToRelationship _ _ _ = Nothing
 
 filePathToRelationships :: Archive -> FilePath -> FilePath ->  [Relationship]
 filePathToRelationships ar docXmlPath fp
   | Just relType <- filePathToRelType fp docXmlPath
   , Just entry <- findEntryByPath fp ar
-  , Just relElems <- (parseXMLDoc . UTF8.toStringLazy . fromEntry) entry =
-  mapMaybe (relElemToRelationship relType) $ elChildren relElems
+  , Just relElems <- parseXMLFromEntry entry =
+  mapMaybe (relElemToRelationship fp relType) $ elChildren relElems
 filePathToRelationships _ _ _ = []
 
 archiveToRelationships :: Archive -> FilePath -> [Relationship]
@@ -481,10 +530,10 @@ lookupLevel numId ilvl (Numbering _ numbs absNumbs) = do
 loElemToLevelOverride :: NameSpaces -> Element -> Maybe LevelOverride
 loElemToLevelOverride ns element
   | isElem ns "w" "lvlOverride" element = do
-      ilvl <- findAttrTextByName ns "w" "ilvl" element
+      ilvl <- findAttrByName ns "w" "ilvl" element
       let startOverride = findChildByName ns "w" "startOverride" element
                           >>= findAttrByName ns "w" "val"
-                          >>= (\s -> listToMaybe (map fst (reads s :: [(Integer, String)])))
+                          >>= stringToInteger
           lvl = findChildByName ns "w" "lvl" element
                 >>= levelElemToLevel ns
       return $ LevelOverride ilvl startOverride lvl
@@ -493,9 +542,9 @@ loElemToLevelOverride _ _ = Nothing
 numElemToNum :: NameSpaces -> Element -> Maybe Numb
 numElemToNum ns element
   | isElem ns "w" "num" element = do
-      numId <- findAttrTextByName ns "w" "numId" element
+      numId <- findAttrByName ns "w" "numId" element
       absNumId <- findChildByName ns "w" "abstractNumId" element
-                  >>= findAttrTextByName ns "w" "val"
+                  >>= findAttrByName ns "w" "val"
       let lvlOverrides = mapMaybe
                          (loElemToLevelOverride ns)
                          (findChildrenByName ns "w" "lvlOverride" element)
@@ -505,7 +554,7 @@ numElemToNum _ _ = Nothing
 absNumElemToAbsNum :: NameSpaces -> Element -> Maybe AbstractNumb
 absNumElemToAbsNum ns element
   | isElem ns "w" "abstractNum" element = do
-      absNumId <- findAttrTextByName ns "w" "abstractNumId" element
+      absNumId <- findAttrByName ns "w" "abstractNumId" element
       let levelElems = findChildrenByName ns "w" "lvl" element
           levels = mapMaybe (levelElemToLevel ns) levelElems
       return $ AbstractNumb absNumId levels
@@ -514,23 +563,23 @@ absNumElemToAbsNum _ _ = Nothing
 levelElemToLevel :: NameSpaces -> Element -> Maybe Level
 levelElemToLevel ns element
   | isElem ns "w" "lvl" element = do
-      ilvl <- findAttrTextByName ns "w" "ilvl" element
+      ilvl <- findAttrByName ns "w" "ilvl" element
       fmt <- findChildByName ns "w" "numFmt" element
-             >>= findAttrTextByName ns "w" "val"
+             >>= findAttrByName ns "w" "val"
       txt <- findChildByName ns "w" "lvlText" element
-             >>= findAttrTextByName ns "w" "val"
+             >>= findAttrByName ns "w" "val"
       let start = findChildByName ns "w" "start" element
                   >>= findAttrByName ns "w" "val"
-                  >>= (\s -> listToMaybe (map fst (reads s :: [(Integer, String)])))
+                  >>= stringToInteger
       return (Level ilvl fmt txt start)
 levelElemToLevel _ _ = Nothing
 
 archiveToNumbering' :: Archive -> Maybe Numbering
 archiveToNumbering' zf =
   case findEntryByPath "word/numbering.xml" zf of
-    Nothing -> Just $ Numbering [] [] []
+    Nothing -> Just $ Numbering mempty [] []
     Just entry -> do
-      numberingElem <- (parseXMLDoc . UTF8.toStringLazy . fromEntry) entry
+      numberingElem <- parseXMLFromEntry entry
       let namespaces = elemToNameSpaces numberingElem
           numElems = findChildrenByName namespaces "w" "num" numberingElem
           absNumElems = findChildrenByName namespaces "w" "abstractNum" numberingElem
@@ -540,13 +589,13 @@ archiveToNumbering' zf =
 
 archiveToNumbering :: Archive -> Numbering
 archiveToNumbering archive =
-  fromMaybe (Numbering [] [] []) (archiveToNumbering' archive)
+  fromMaybe (Numbering mempty [] []) (archiveToNumbering' archive)
 
-elemToNotes :: NameSpaces -> String -> Element -> Maybe (M.Map T.Text Element)
+elemToNotes :: NameSpaces -> Text -> Element -> Maybe (M.Map T.Text Element)
 elemToNotes ns notetype element
   | isElem ns "w" (notetype <> "s") element =
       let pairs = mapMaybe
-                  (\e -> findAttrTextByName ns "w" "id" e >>=
+                  (\e -> findAttrByName ns "w" "id" e >>=
                          (\a -> Just (a, e)))
                   (findChildrenByName ns "w" notetype element)
       in
@@ -558,7 +607,7 @@ elemToComments :: NameSpaces -> Element -> M.Map T.Text Element
 elemToComments ns element
   | isElem ns "w" "comments" element =
       let pairs = mapMaybe
-                  (\e -> findAttrTextByName ns "w" "id" e >>=
+                  (\e -> findAttrByName ns "w" "id" e >>=
                          (\a -> Just (a, e)))
                   (findChildrenByName ns "w" "comment" element)
       in
@@ -573,7 +622,7 @@ elemToTblGrid :: NameSpaces -> Element -> D TblGrid
 elemToTblGrid ns element | isElem ns "w" "tblGrid" element =
   let cols = findChildrenByName ns "w" "gridCol" element
   in
-   mapD (\e -> maybeToD (findAttrByName ns "w" "val" e >>= stringToInteger))
+   mapD (\e -> maybeToD (findAttrByName ns "w" "w" e >>= stringToInteger))
    cols
 elemToTblGrid _ _ = throwError WrongElem
 
@@ -597,14 +646,31 @@ elemToRow ns element | isElem ns "w" "tr" element =
   do
     let cellElems = findChildrenByName ns "w" "tc" element
     cells <- mapD (elemToCell ns) cellElems
-    return $ Row cells
+    let hasTblHeader = maybe NoTblHeader (const HasTblHeader)
+          (findChildByName ns "w" "trPr" element
+           >>= findChildByName ns "w" "tblHeader")
+    return $ Row hasTblHeader cells
 elemToRow _ _ = throwError WrongElem
 
 elemToCell :: NameSpaces -> Element -> D Cell
 elemToCell ns element | isElem ns "w" "tc" element =
   do
+    let properties = findChildByName ns "w" "tcPr" element
+    let gridSpan = properties
+                     >>= findChildByName ns "w" "gridSpan"
+                     >>= findAttrByName ns "w" "val"
+                     >>= stringToInteger
+    let vMerge = case properties >>= findChildByName ns "w" "vMerge" of
+                   Nothing -> Restart
+                   Just e ->
+                     fromMaybe Continue $ do
+                       s <- findAttrByName ns "w" "val" e
+                       case s of
+                         "continue" -> Just Continue
+                         "restart" -> Just Restart
+                         _ -> Nothing
     cellContents <- mapD (elemToBodyPart ns) (elChildren element)
-    return $ Cell cellContents
+    return $ Cell (fromMaybe 1 gridSpan) vMerge cellContents
 elemToCell _ _ = throwError WrongElem
 
 elemToParIndentation :: NameSpaces -> Element -> Maybe ParIndentation
@@ -618,12 +684,12 @@ elemToParIndentation ns element | isElem ns "w" "ind" element =
       stringToInteger
     , hangingParIndent =
       findAttrByName ns "w" "hanging" element >>=
-      stringToInteger}
+      stringToInteger }
 elemToParIndentation _ _ = Nothing
 
-testBitMask :: String -> Int -> Bool
+testBitMask :: Text -> Int -> Bool
 testBitMask bitMaskS n =
-  case (reads ("0x" ++ bitMaskS) :: [(Int, String)]) of
+  case (reads ("0x" ++ T.unpack bitMaskS) :: [(Int, String)]) of
     []            -> False
     ((n', _) : _) -> (n' .|. n) /= 0
 
@@ -636,10 +702,9 @@ pNumInfo = getParStyleField numInfo . pStyle
 elemToBodyPart :: NameSpaces -> Element -> D BodyPart
 elemToBodyPart ns element
   | isElem ns "w" "p" element
-  , (c:_) <- findChildrenByName ns "m" "oMathPara" element =
-      do
-        expsLst <- eitherToD $ readOMML $ T.pack $ showElement c
-        return $ OMathPara expsLst
+  , (c:_) <- findChildrenByName ns "m" "oMathPara" element = do
+      expsLst <- eitherToD $ readOMML $ showElement c
+      return $ OMathPara expsLst
 elemToBodyPart ns element
   | isElem ns "w" "p" element
   , Just (numId, lvl) <- getNumInfo ns element = do
@@ -657,13 +722,31 @@ elemToBodyPart ns element
         Nothing | Just (numId, lvl) <- pNumInfo parstyle -> do
                     levelInfo <- lookupLevel numId lvl <$> asks envNumbering
                     return $ ListItem parstyle numId lvl levelInfo parparts
-        _ -> return $ Paragraph parstyle parparts
+        _ -> let
+          hasCaptionStyle = elem "Caption" (pStyleId <$> pStyle parstyle)
+
+          hasSimpleTableField = fromMaybe False $ do
+            fldSimple <- findChildByName ns "w" "fldSimple" element
+            instr <- findAttrByName ns "w" "instr" fldSimple
+            pure ("Table" `elem` T.words instr)
+
+          hasComplexTableField = fromMaybe False $ do
+            instrText <- findElementByName ns "w" "instrText" element
+            pure ("Table" `elem` T.words (strContent instrText))
+
+          in if hasCaptionStyle && (hasSimpleTableField || hasComplexTableField)
+             then return $ TblCaption parstyle parparts
+             else return $ Paragraph parstyle parparts
+
 elemToBodyPart ns element
   | isElem ns "w" "tbl" element = do
-    let caption' = findChildByName ns "w" "tblPr" element
+    let tblProperties = findChildByName ns "w" "tblPr" element
+        caption = fromMaybe "" $ tblProperties
                    >>= findChildByName ns "w" "tblCaption"
-                   >>= findAttrTextByName ns "w" "val"
-        caption = fromMaybe "" caption'
+                   >>= findAttrByName ns "w" "val"
+        description = fromMaybe "" $ tblProperties
+                       >>= findChildByName ns "w" "tblDescription"
+                       >>= findAttrByName ns "w" "val"
         grid' = case findChildByName ns "w" "tblGrid" element of
           Just g  -> elemToTblGrid ns g
           Nothing -> return []
@@ -676,7 +759,7 @@ elemToBodyPart ns element
     grid <- grid'
     tblLook <- tblLook'
     rows <- mapD (elemToRow ns) (elChildren element)
-    return $ Tbl caption grid tblLook rows
+    return $ Tbl (caption <> description) grid tblLook rows
 elemToBodyPart _ _ = throwError WrongElem
 
 lookupRelationship :: DocumentLocation -> RelId -> [Relationship] -> Maybe Target
@@ -701,8 +784,8 @@ getTitleAndAlt :: NameSpaces -> Element -> (T.Text, T.Text)
 getTitleAndAlt ns element =
   let mbDocPr = findChildByName ns "wp" "inline" element >>=
                 findChildByName ns "wp" "docPr"
-      title = fromMaybe "" (mbDocPr >>= findAttrTextByName ns "" "title")
-      alt = fromMaybe "" (mbDocPr >>= findAttrTextByName ns "" "descr")
+      title = fromMaybe "" (mbDocPr >>= findAttrByName ns "" "title")
+      alt = fromMaybe "" (mbDocPr >>= findAttrByName ns "" "descr")
   in (title, alt)
 
 elemToParPart :: NameSpaces -> Element -> D ParPart
@@ -714,22 +797,29 @@ elemToParPart ns element
   = let (title, alt) = getTitleAndAlt ns drawingElem
         a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
         drawing = findElement (QName "blip" (Just a_ns) (Just "a")) picElem
-                  >>= findAttrTextByName ns "r" "embed"
+                  >>= findAttrByName ns "r" "embed"
     in
      case drawing of
        Just s -> expandDrawingId s >>= (\(fp, bs) -> return $ Drawing fp title alt bs $ elemToExtent drawingElem)
        Nothing -> throwError WrongElem
--- The below is an attempt to deal with images in deprecated vml format.
+-- The two cases below are an attempt to deal with images in deprecated vml format.
+-- Todo: check out title and attr for deprecated format.
 elemToParPart ns element
   | isElem ns "w" "r" element
   , Just _ <- findChildByName ns "w" "pict" element =
     let drawing = findElement (elemName ns "v" "imagedata") element
-                  >>= findAttrTextByName ns "r" "id"
+                  >>= findAttrByName ns "r" "id"
     in
      case drawing of
-       -- Todo: check out title and attr for deprecated format.
        Just s -> expandDrawingId s >>= (\(fp, bs) -> return $ Drawing fp "" "" bs Nothing)
        Nothing -> throwError WrongElem
+elemToParPart ns element
+  | isElem ns "w" "r" element
+  , Just objectElem <- findChildByName ns "w" "object" element
+  , Just shapeElem <- findChildByName ns "v" "shape" objectElem
+  , Just imagedataElem <- findChildByName ns "v" "imagedata" shapeElem
+  , Just drawingId <- findAttrByName ns "r" "id" imagedataElem
+  = expandDrawingId drawingId >>= (\(fp, bs) -> return $ Drawing fp "" "" bs Nothing)
 -- Chart
 elemToParPart ns element
   | isElem ns "w" "r" element
@@ -793,7 +883,7 @@ elemToParPart ns element
       fldCharState <- gets stateFldCharState
       case fldCharState of
         FldCharOpen -> do
-          info <- eitherToD $ parseFieldInfo $ T.pack $ strContent instrText
+          info <- eitherToD $ parseFieldInfo $ strContent instrText
           modify $ \st -> st{stateFldCharState = FldCharFieldInfo info}
           return NullParPart
         _ -> return NullParPart
@@ -814,48 +904,48 @@ elemToParPart ns element
       return $ ChangedRuns change runs
 elemToParPart ns element
   | isElem ns "w" "bookmarkStart" element
-  , Just bmId <- findAttrTextByName ns "w" "id" element
-  , Just bmName <- findAttrTextByName ns "w" "name" element =
+  , Just bmId <- findAttrByName ns "w" "id" element
+  , Just bmName <- findAttrByName ns "w" "name" element =
     return $ BookMark bmId bmName
 elemToParPart ns element
   | isElem ns "w" "hyperlink" element
-  , Just relId <- findAttrTextByName ns "r" "id" element = do
+  , Just relId <- findAttrByName ns "r" "id" element = do
     location <- asks envLocation
     runs <- mapD (elemToRun ns) (elChildren element)
     rels <- asks envRelationships
     case lookupRelationship location relId rels of
       Just target ->
-         case findAttrTextByName ns "w" "anchor" element of
+         case findAttrByName ns "w" "anchor" element of
              Just anchor -> return $ ExternalHyperLink (target <> "#" <> anchor) runs
              Nothing -> return $ ExternalHyperLink target runs
       Nothing     -> return $ ExternalHyperLink "" runs
 elemToParPart ns element
   | isElem ns "w" "hyperlink" element
-  , Just anchor <- findAttrTextByName ns "w" "anchor" element = do
+  , Just anchor <- findAttrByName ns "w" "anchor" element = do
     runs <- mapD (elemToRun ns) (elChildren element)
     return $ InternalHyperLink anchor runs
 elemToParPart ns element
   | isElem ns "w" "commentRangeStart" element
-  , Just cmtId <- findAttrTextByName ns "w" "id" element = do
+  , Just cmtId <- findAttrByName ns "w" "id" element = do
       (Comments _ commentMap) <- asks envComments
       case M.lookup cmtId commentMap of
         Just cmtElem -> elemToCommentStart ns cmtElem
         Nothing      -> throwError WrongElem
 elemToParPart ns element
   | isElem ns "w" "commentRangeEnd" element
-  , Just cmtId <- findAttrTextByName ns "w" "id" element =
+  , Just cmtId <- findAttrByName ns "w" "id" element =
     return $ CommentEnd cmtId
 elemToParPart ns element
   | isElem ns "m" "oMath" element =
-    fmap PlainOMath (eitherToD $ readOMML $ T.pack $ showElement element)
+    fmap PlainOMath (eitherToD $ readOMML $ showElement element)
 elemToParPart _ _ = throwError WrongElem
 
 elemToCommentStart :: NameSpaces -> Element -> D ParPart
 elemToCommentStart ns element
   | isElem ns "w" "comment" element
-  , Just cmtId <- findAttrTextByName ns "w" "id" element
-  , Just cmtAuthor <- findAttrTextByName ns "w" "author" element
-  , Just cmtDate <- findAttrTextByName ns "w" "date" element = do
+  , Just cmtId <- findAttrByName ns "w" "id" element
+  , Just cmtAuthor <- findAttrByName ns "w" "author" element
+  , cmtDate <- findAttrByName ns "w" "date" element = do
       bps <- mapD (elemToBodyPart ns) (elChildren element)
       return $ CommentStart cmtId cmtAuthor cmtDate bps
 elemToCommentStart _ _ = throwError WrongElem
@@ -874,7 +964,7 @@ elemToExtent drawingElem =
     where
       wp_ns  = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
       getDim at = findElement (QName "extent" (Just wp_ns) (Just "wp")) drawingElem
-                    >>= findAttr (QName at Nothing Nothing) >>= safeRead . T.pack
+                    >>= findAttr (QName at Nothing Nothing) >>= safeRead
 
 
 childElemToRun :: NameSpaces -> Element -> D Run
@@ -885,7 +975,7 @@ childElemToRun ns element
   = let (title, alt) = getTitleAndAlt ns element
         a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
         drawing = findElement (QName "blip" (Just a_ns) (Just "a")) picElem
-                  >>= findAttrText (QName "embed" (lookup "r" ns) (Just "r"))
+                  >>= findAttr (QName "embed" (M.lookup "r" ns) (Just "r"))
     in
      case drawing of
        Just s -> expandDrawingId s >>=
@@ -898,7 +988,7 @@ childElemToRun ns element
   = return InlineChart
 childElemToRun ns element
   | isElem ns "w" "footnoteReference" element
-  , Just fnId <- findAttrTextByName ns "w" "id" element = do
+  , Just fnId <- findAttrByName ns "w" "id" element = do
     notes <- asks envNotes
     case lookupFootnote fnId notes of
       Just e -> do bps <- local (\r -> r {envLocation=InFootnote}) $ mapD (elemToBodyPart ns) (elChildren e)
@@ -906,7 +996,7 @@ childElemToRun ns element
       Nothing  -> return $ Footnote []
 childElemToRun ns element
   | isElem ns "w" "endnoteReference" element
-  , Just enId <- findAttrTextByName ns "w" "id" element = do
+  , Just enId <- findAttrByName ns "w" "id" element = do
     notes <- asks envNotes
     case lookupEndnote enId notes of
       Just e -> do bps <- local (\r -> r {envLocation=InEndnote}) $ mapD (elemToBodyPart ns) (elChildren e)
@@ -959,16 +1049,16 @@ getParStyleField _ _ = Nothing
 getTrackedChange :: NameSpaces -> Element -> Maybe TrackedChange
 getTrackedChange ns element
   | isElem ns "w" "ins" element || isElem ns "w" "moveTo" element
-  , Just cId <- findAttrTextByName ns "w" "id" element
-  , Just cAuthor <- findAttrTextByName ns "w" "author" element
-  , Just cDate <- findAttrTextByName ns "w" "date" element =
-      Just $ TrackedChange Insertion (ChangeInfo cId cAuthor cDate)
+  , Just cId <- findAttrByName ns "w" "id" element
+  , Just cAuthor <- findAttrByName ns "w" "author" element
+  , mcDate <- findAttrByName ns "w" "date" element =
+      Just $ TrackedChange Insertion (ChangeInfo cId cAuthor mcDate)
 getTrackedChange ns element
   | isElem ns "w" "del" element || isElem ns "w" "moveFrom" element
-  , Just cId <- findAttrTextByName ns "w" "id" element
-  , Just cAuthor <- findAttrTextByName ns "w" "author" element
-  , Just cDate <- findAttrTextByName ns "w" "date" element =
-      Just $ TrackedChange Deletion (ChangeInfo cId cAuthor cDate)
+  , Just cId <- findAttrByName ns "w" "id" element
+  , Just cAuthor <- findAttrByName ns "w" "author" element
+  , mcDate <- findAttrByName ns "w" "date" element =
+      Just $ TrackedChange Deletion (ChangeInfo cId cAuthor mcDate)
 getTrackedChange _ _ = Nothing
 
 elemToParagraphStyle :: NameSpaces -> Element -> ParStyleMap -> ParagraphStyle
@@ -976,7 +1066,7 @@ elemToParagraphStyle ns element sty
   | Just pPr <- findChildByName ns "w" "pPr" element =
     let style =
           mapMaybe
-          (fmap ParaStyleId . findAttrTextByName ns "w" "val")
+          (fmap ParaStyleId . findAttrByName ns "w" "val")
           (findChildrenByName ns "w" "pStyle" pPr)
     in ParagraphStyle
       {pStyle = mapMaybe (`M.lookup` sty) style
@@ -1008,7 +1098,7 @@ elemToRunStyleD ns element
     charStyles <- asks envCharStyles
     let parentSty =
           findChildByName ns "w" "rStyle" rPr >>=
-          findAttrTextByName ns "w" "val" >>=
+          findAttrByName ns "w" "val" >>=
           flip M.lookup charStyles . CharStyleId
     return $ elemToRunStyle ns element parentSty
 elemToRunStyleD _ _ = return defaultRunStyle
@@ -1018,7 +1108,7 @@ elemToRunElem ns element
   | isElem ns "w" "t" element
     || isElem ns "w" "delText" element
     || isElem ns "m" "t" element = do
-    let str = T.pack $ strContent element
+    let str = strContent element
     font <- asks envFont
     case font of
       Nothing -> return $ TextRun str
@@ -1040,14 +1130,14 @@ getSymChar :: NameSpaces -> Element -> RunElem
 getSymChar ns element
   | Just s <- lowerFromPrivate <$> getCodepoint
   , Just font <- getFont =
-    case readLitChar ("\\x" ++ s) of
+    case readLitChar ("\\x" ++ T.unpack s) of
          [(char, _)] -> TextRun . maybe "" T.singleton $ getUnicode font char
          _           -> TextRun ""
   where
     getCodepoint = findAttrByName ns "w" "char" element
-    getFont = textToFont . T.pack =<< findAttrByName ns "w" "font" element
-    lowerFromPrivate ('F':xs) = '0':xs
-    lowerFromPrivate xs       = xs
+    getFont = textToFont =<< findAttrByName ns "w" "font" element
+    lowerFromPrivate t | "F" `T.isPrefixOf` t = "0" <> T.drop 1 t
+                       | otherwise             = t
 getSymChar _ _ = TextRun ""
 
 elemToRunElems :: NameSpaces -> Element -> D [RunElem]
@@ -1057,8 +1147,9 @@ elemToRunElems ns element
        let qualName = elemName ns "w"
        let font = do
                     fontElem <- findElement (qualName "rFonts") element
-                    textToFont . T.pack =<<
-                       foldr ((<|>) . (flip findAttr fontElem . qualName)) Nothing ["ascii", "hAnsi"]
+                    textToFont =<<
+                       foldr ((<|>) . (flip findAttr fontElem . qualName))
+                         Nothing ["ascii", "hAnsi"]
        local (setFont font) (mapD (elemToRunElem ns) (elChildren element))
 elemToRunElems _ _ = throwError WrongElem
 

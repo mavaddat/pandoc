@@ -1,7 +1,7 @@
 {- |
    Module      : Text.Pandoc.Lua.Marshaling.MediaBag
-   Copyright   : © 2012-2020 John MacFarlane
-                 © 2017-2020 Albert Krewinkel
+   Copyright   : © 2012-2021 John MacFarlane
+                 © 2017-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
    Stability   : alpha
@@ -34,7 +34,7 @@ instance Peekable MediaItems where
   peek = peekMediaItems
 
 -- | Push an iterator triple to be used with Lua's @for@ loop construct.
--- Each iterator invokation returns a tripple consisting of an item's
+-- Each iterator invocation returns a triple containing the item's
 -- filename, MIME type, and content.
 pushIterator :: MediaBag -> Lua NumResults
 pushIterator mb = do

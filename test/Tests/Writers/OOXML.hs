@@ -1,10 +1,8 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE PatternGuards     #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Tests.Writers.OOXML (ooxmlTest) where
 
-import Prelude
 import Text.Pandoc
 import Test.Tasty
 import Test.Tasty.Golden.Advanced
@@ -45,10 +43,11 @@ compareXMLBool _ _ = False
 
 displayDiff :: Content -> Content -> String
 displayDiff elemA elemB =
-  showDiff (1,1) $ getDiff (lines $ ppContent elemA) (lines $ ppContent elemB)
+  showDiff (1,1)
+    (getDiff (lines $ showContent elemA) (lines $ showContent elemB))
 
 goldenArchive :: FilePath -> IO Archive
-goldenArchive fp = (toArchive . BL.fromStrict) <$> BS.readFile fp
+goldenArchive fp = toArchive . BL.fromStrict <$> BS.readFile fp
 
 testArchive :: (WriterOptions -> Pandoc -> PandocIO BL.ByteString)
             -> WriterOptions
@@ -56,7 +55,9 @@ testArchive :: (WriterOptions -> Pandoc -> PandocIO BL.ByteString)
             -> IO Archive
 testArchive writerFn opts fp = do
   txt <- T.readFile fp
-  bs <- runIOorExplode $ readNative def txt >>= writerFn opts
+  bs <- runIOorExplode $ do
+    setTranslations "en-US"
+    readNative def txt >>= writerFn opts
   return $ toArchive bs
 
 compareFileList :: FilePath -> Archive -> Archive -> Maybe String

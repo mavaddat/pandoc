@@ -2,7 +2,7 @@
 {-# LANGUAGE CPP               #-}
 {- |
    Module      : Text.Pandoc.Writers.OPML
-   Copyright   : Copyright (C) 2013-2020 John MacFarlane
+   Copyright   : Copyright (C) 2013-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -40,7 +40,7 @@ writeOPML opts (Pandoc meta blocks) = do
                 writeMarkdown def (Pandoc nullMeta [Plain ils]))
               meta'
   let blocks' = makeSections False (Just 1) blocks
-  main <- (render colwidth . vcat) <$>
+  main <- render colwidth . vcat <$>
              mapM (blockToOPML opts) blocks'
   let context = defField "body" main metadata
   return $

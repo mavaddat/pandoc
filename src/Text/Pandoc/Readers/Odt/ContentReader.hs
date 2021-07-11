@@ -1,4 +1,5 @@
 {-# LANGUAGE Arrows            #-}
+{-# LANGUAGE CPP               #-}
 {-# LANGUAGE DeriveFoldable    #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE PatternGuards     #-}
@@ -25,17 +26,18 @@ module Text.Pandoc.Readers.Odt.ContentReader
 
 import Control.Applicative hiding (liftA, liftA2, liftA3)
 import Control.Arrow
+import Control.Monad ((<=<))
 
 import qualified Data.ByteString.Lazy as B
 import Data.Foldable (fold)
-import Data.List (find, stripPrefix)
+import Data.List (find)
 import qualified Data.Map as M
 import qualified Data.Text as T
 import Data.Maybe
-import Data.Semigroup (First(..), Option(..))
+import Data.Monoid (Alt (..))
 
 import Text.TeXMath (readMathML, writeTeX)
-import qualified Text.XML.Light as XML
+import qualified Text.Pandoc.XML.Light as XML
 
 import Text.Pandoc.Builder hiding (underline)
 import Text.Pandoc.MediaBag (MediaBag, insertMedia)
@@ -220,9 +222,9 @@ uniqueIdentFrom :: AnchorPrefix -> [Anchor] -> Anchor
 uniqueIdentFrom baseIdent usedIdents =
   let  numIdent n = baseIdent <> "-" <> T.pack (show n)
   in  if baseIdent `elem` usedIdents
-        then case find (\x -> numIdent x `notElem` usedIdents) ([1..60000] :: [Int]) of
-                  Just x  -> numIdent x
-                  Nothing -> baseIdent   -- if we have more than 60,000, allow repeats
+        then maybe baseIdent numIdent
+             $ find (\x -> numIdent x `notElem` usedIdents) ([1..60000] :: [Int])
+               -- if we have more than 60,000, allow repeats
         else baseIdent
 
 -- | First argument: basis for a new "pretty" anchor if none exists yet
@@ -352,11 +354,11 @@ modifierFromStyleDiff propertyTriple  =
 
     lookupPreviousValue f = lookupPreviousStyleValue (fmap f . textProperties)
 
-    lookupPreviousValueM f = lookupPreviousStyleValue ((f =<<).textProperties)
+    lookupPreviousValueM f = lookupPreviousStyleValue (f <=< textProperties)
 
     lookupPreviousStyleValue f (ReaderState{..},_,mFamily)
       =     findBy f (extendedStylePropertyChain styleTrace styleSet)
-        <|> ( f =<< fmap (lookupDefaultStyle' styleSet) mFamily         )
+        <|> (f . lookupDefaultStyle' styleSet =<< mFamily)
 
 
 type ParaModifier = Blocks -> Blocks
@@ -504,13 +506,11 @@ type InlineMatcher = ElementMatcher Inlines
 
 type BlockMatcher  = ElementMatcher Blocks
 
-
-newtype FirstMatch a = FirstMatch (Option (First a))
-                     deriving (Foldable, Monoid, Semigroup)
+newtype FirstMatch a = FirstMatch (Alt Maybe a)
+  deriving (Foldable, Monoid, Semigroup)
 
 firstMatch :: a -> FirstMatch a
-firstMatch = FirstMatch . Option . Just . First
-
+firstMatch = FirstMatch . Alt . Just
 
 --
 matchingElement :: (Monoid e)
@@ -556,7 +556,7 @@ read_plain_text =  fst ^&&& read_plain_text' >>% recover
                        >>?% mappend
     --
     extractText     :: XML.Content -> Fallible T.Text
-    extractText (XML.Text cData) = succeedWith (T.pack $ XML.cdData cData)
+    extractText (XML.Text cData) = succeedWith (XML.cdData cData)
     extractText         _        = failEmpty
 
 read_text_seq :: InlineMatcher
@@ -576,7 +576,10 @@ read_spaces       = matchingElement NsText "s" (
 read_line_break  :: InlineMatcher
 read_line_break   = matchingElement NsText "line-break"
                     $ returnV linebreak
-
+--
+read_tab         :: InlineMatcher
+read_tab          = matchingElement NsText "tab"
+                    $ returnV space
 --
 read_span        :: InlineMatcher
 read_span         = matchingElement NsText "span"
@@ -584,6 +587,7 @@ read_span         = matchingElement NsText "span"
                     $ matchChildContent [ read_span
                                         , read_spaces
                                         , read_line_break
+                                        , read_tab
                                         , read_link
                                         , read_note
                                         , read_citation
@@ -603,6 +607,7 @@ read_paragraph    = matchingElement NsText "p"
                     $ matchChildContent [ read_span
                                         , read_spaces
                                         , read_line_break
+                                        , read_tab
                                         , read_link
                                         , read_note
                                         , read_citation
@@ -629,6 +634,7 @@ read_header       = matchingElement NsText "h"
   children <- ( matchChildContent [ read_span
                                   , read_spaces
                                   , read_line_break
+                                  , read_tab
                                   , read_link
                                   , read_note
                                   , read_citation
@@ -776,14 +782,14 @@ read_frame_img =
       ""   -> returnV mempty -< ()
       src' -> do
         let exts = extensionsFromList [Ext_auto_identifiers]
-        resource   <- lookupResource                          -< src'
+        resource   <- lookupResource                          -< T.unpack src'
         _          <- updateMediaWithResource                 -< resource
         w          <- findAttrText' NsSVG "width"             -< ()
         h          <- findAttrText' NsSVG "height"            -< ()
         titleNodes <- matchChildContent' [ read_frame_title ] -< ()
         alt        <- matchChildContent [] read_plain_text    -< ()
         arr (firstMatch . uncurry4 imageWith)                 -<
-          (image_attributes w h, T.pack src', inlineListToIdentifier exts (toList titleNodes), alt)
+          (image_attributes w h, src', inlineListToIdentifier exts (toList titleNodes), alt)
 
 read_frame_title :: InlineMatcher
 read_frame_title = matchingElement NsSVG "title" (matchChildContent [] read_plain_text)
@@ -803,7 +809,8 @@ read_frame_mathml =
     case fold src of
       ""   -> returnV mempty -< ()
       src' -> do
-        let path = fromMaybe src' (stripPrefix "./" src') ++ "/content.xml"
+        let path = T.unpack $
+                    fromMaybe src' (T.stripPrefix "./" src') <> "/content.xml"
         (_, mathml) <- lookupResource -< path
         case readMathML (UTF8.toText $ B.toStrict mathml) of
           Left _     -> returnV mempty -< ()

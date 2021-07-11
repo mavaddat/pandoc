@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Writers.Roff
-   Copyright   : Copyright (C) 2007-2020 John MacFarlane
+   Copyright   : Copyright (C) 2007-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -90,7 +90,7 @@ escapeString e = Text.concat . escapeString' e . Text.unpack
                 AllowUTF8 -> Text.singleton x : escapeString' escapeMode xs
                 AsciiOnly ->
                   let accents = catMaybes $ takeWhile isJust
-                        (map (\c -> Map.lookup c combiningAccentsMap) xs)
+                        (map (`Map.lookup` combiningAccentsMap) xs)
                       rest = drop (length accents) xs
                       s = case Map.lookup x characterCodeMap of
                             Just t  -> "\\[" <> Text.unwords (t:accents) <> "]"

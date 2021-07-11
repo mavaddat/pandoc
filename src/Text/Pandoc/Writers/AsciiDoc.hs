@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Writers.AsciiDoc
-   Copyright   : Copyright (C) 2006-2020 John MacFarlane
+   Copyright   : Copyright (C) 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -22,6 +22,7 @@ module Text.Pandoc.Writers.AsciiDoc (writeAsciiDoc, writeAsciiDoctor) where
 import Control.Monad.State.Strict
 import Data.Char (isPunctuation, isSpace)
 import Data.List (intercalate, intersperse)
+import Data.List.NonEmpty (NonEmpty(..))
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -37,6 +38,7 @@ import Text.Pandoc.Shared
 import Text.Pandoc.Templates (renderTemplate)
 import Text.Pandoc.Writers.Shared
 
+
 data WriterState = WriterState { defListMarker       :: Text
                                , orderedListLevel    :: Int
                                , bulletListLevel     :: Int
@@ -45,6 +47,10 @@ data WriterState = WriterState { defListMarker       :: Text
                                , asciidoctorVariant  :: Bool
                                , inList              :: Bool
                                , hasMath             :: Bool
+                               -- |0 is no table
+                               -- 1 is top level table
+                               -- 2 is a table in a table
+                               , tableNestingLevel   :: Int
                                }
 
 defaultWriterState :: WriterState
@@ -56,6 +62,7 @@ defaultWriterState = WriterState { defListMarker      = "::"
                                  , asciidoctorVariant = False
                                  , inList             = False
                                  , hasMath            = False
+                                 , tableNestingLevel  = 0
                                  }
 
 -- | Convert Pandoc to AsciiDoc.
@@ -66,7 +73,8 @@ writeAsciiDoc opts document =
 -- | Convert Pandoc to AsciiDoctor compatible AsciiDoc.
 writeAsciiDoctor :: PandocMonad m => WriterOptions -> Pandoc -> m Text
 writeAsciiDoctor opts document =
-  evalStateT (pandocToAsciiDoc opts document) defaultWriterState{ asciidoctorVariant = True }
+  evalStateT (pandocToAsciiDoc opts document)
+    defaultWriterState{ asciidoctorVariant = True }
 
 type ADW = StateT WriterState
 
@@ -97,8 +105,11 @@ pandocToAsciiDoc opts (Pandoc meta blocks) = do
 
 -- | Escape special characters for AsciiDoc.
 escapeString :: Text -> Text
-escapeString = escapeStringUsing escs
-  where escs = backslashEscapes "{"
+escapeString t
+  | T.any (== '{') t = T.concatMap escChar t
+  | otherwise        = t
+  where escChar '{' = "\\{"
+        escChar c   = T.singleton c
 
 -- | Ordered list start parser for use in Para below.
 olMarker :: Parser Text ParserState Char
@@ -138,9 +149,11 @@ blockToAsciiDoc opts (Div (id',"section":_,_)
 blockToAsciiDoc opts (Plain inlines) = do
   contents <- inlineListToAsciiDoc opts inlines
   return $ contents <> blankline
-blockToAsciiDoc opts (Para [Image attr alt (src,tgt)])
+blockToAsciiDoc opts (Para [Image attr alternate (src,tgt)])
+  -- image::images/logo.png[Company logo, title="blah"]
   | Just tit <- T.stripPrefix "fig:" tgt
-  = blockToAsciiDoc opts (Para [Image attr alt (src,tit)])
+  = (\args -> "image::" <> args <> blankline) <$>
+    imageArguments opts attr alternate src tit
 blockToAsciiDoc opts (Para inlines) = do
   contents <- inlineListToAsciiDoc opts inlines
   -- escape if para starts with ordered list marker
@@ -191,8 +204,9 @@ blockToAsciiDoc opts (BlockQuote blocks) = do
                      else contents
   let bar = text "____"
   return $ bar $$ chomp contents' $$ bar <> blankline
-blockToAsciiDoc opts (Table _ blkCapt specs thead tbody tfoot) = do
-  let (caption, aligns, widths, headers, rows) = toLegacyTable blkCapt specs thead tbody tfoot
+blockToAsciiDoc opts block@(Table _ blkCapt specs thead tbody tfoot) = do
+  let (caption, aligns, widths, headers, rows) =
+        toLegacyTable blkCapt specs thead tbody tfoot
   caption' <- inlineListToAsciiDoc opts caption
   let caption'' = if null caption
                      then empty
@@ -232,23 +246,42 @@ blockToAsciiDoc opts (Table _ blkCapt specs thead tbody tfoot) = do
              $ zipWith colspec aligns widths')
          <> text ","
          <> headerspec <> text "]"
+         
+  -- construct cells and recurse in case of nested tables
+  parentTableLevel <- gets tableNestingLevel
+  let currentNestingLevel = parentTableLevel + 1
+  
+  modify $ \st -> st{ tableNestingLevel = currentNestingLevel }
+  
+  let separator = text (if parentTableLevel == 0
+                          then "|"  -- top level separator
+                          else "!") -- nested separator
+
   let makeCell [Plain x] = do d <- blockListToAsciiDoc opts [Plain x]
-                              return $ text "|" <> chomp d
+                              return $ separator <> chomp d
       makeCell [Para x]  = makeCell [Plain x]
-      makeCell []        = return $ text "|"
-      makeCell bs        = do d <- blockListToAsciiDoc opts bs
-                              return $ text "a|" $$ d
+      makeCell []        = return separator
+      makeCell bs        = if currentNestingLevel == 2
+                             then do
+                               --asciidoc only supports nesting once
+                               report $ BlockNotRendered block
+                               return separator
+                             else do
+                               d <- blockListToAsciiDoc opts bs
+                               return $ (text "a" <> separator) $$ d
+
   let makeRow cells = hsep `fmap` mapM makeCell cells
   rows' <- mapM makeRow rows
   head' <- makeRow headers
+  modify $ \st -> st{ tableNestingLevel = parentTableLevel }
   let head'' = if all null headers then empty else head'
   let colwidth = if writerWrapText opts == WrapAuto
                     then writerColumns opts
                     else 100000
-  let maxwidth = maximum $ map offset (head':rows')
+  let maxwidth = maximum $ fmap offset (head' :| rows')
   let body = if maxwidth > colwidth then vsep rows' else vcat rows'
-  let border = text "|==="
-  return $
+  let border = separator <> text "==="
+  return $ 
     caption'' $$ tablespec $$ border $$ head'' $$ body $$ border $$ blankline
 blockToAsciiDoc opts (BulletList items) = do
   inlist <- gets inList
@@ -381,7 +414,10 @@ blockListToAsciiDoc opts blocks =
 data SpacyLocation = End | Start
 
 -- | Convert list of Pandoc inline elements to asciidoc.
-inlineListToAsciiDoc :: PandocMonad m => WriterOptions -> [Inline] -> ADW m (Doc Text)
+inlineListToAsciiDoc :: PandocMonad m =>
+                        WriterOptions ->
+                        [Inline] ->
+                        ADW m (Doc Text)
 inlineListToAsciiDoc opts lst = do
   oldIntraword <- gets intraword
   setIntraword False
@@ -463,7 +499,9 @@ inlineToAsciiDoc opts (Quoted qt lst) = do
         | otherwise     -> [Str "``"] ++ lst ++ [Str "''"]
 inlineToAsciiDoc _ (Code _ str) = do
   isAsciidoctor <- gets asciidoctorVariant
-  let contents = literal (escapeStringUsing (backslashEscapes "`") str)
+  let escChar '`' = "\\'"
+      escChar c   = T.singleton c
+  let contents = literal (T.concatMap escChar str)
   return $
     if isAsciidoctor
        then text "`+" <> contents <> "+`"
@@ -518,27 +556,8 @@ inlineToAsciiDoc opts (Link _ txt (src, _tit)) = do
   return $ if useAuto
               then literal srcSuffix
               else prefix <> literal src <> "[" <> linktext <> "]"
-inlineToAsciiDoc opts (Image attr alternate (src, tit)) = do
--- image:images/logo.png[Company logo, title="blah"]
-  let txt = if null alternate || (alternate == [Str ""])
-               then [Str "image"]
-               else alternate
-  linktext <- inlineListToAsciiDoc opts txt
-  let linktitle = if T.null tit
-                     then empty
-                     else ",title=\"" <> literal tit <> "\""
-      showDim dir = case dimension dir attr of
-                      Just (Percent a) ->
-                        ["scaledwidth=" <> text (show (Percent a))]
-                      Just dim         ->
-                        [text (show dir) <> "=" <> literal (showInPixel opts dim)]
-                      Nothing          ->
-                        []
-      dimList = showDim Width ++ showDim Height
-      dims = if null dimList
-                then empty
-                else "," <> mconcat (intersperse "," dimList)
-  return $ "image:" <> literal src <> "[" <> linktext <> linktitle <> dims <> "]"
+inlineToAsciiDoc opts (Image attr alternate (src, tit)) =
+  ("image:" <>) <$> imageArguments opts attr alternate src tit
 inlineToAsciiDoc opts (Note [Para inlines]) =
   inlineToAsciiDoc opts (Note [Plain inlines])
 inlineToAsciiDoc opts (Note [Plain inlines]) = do
@@ -556,3 +575,30 @@ inlineToAsciiDoc opts (Span (ident,classes,_) ils) = do
        let modifier = brackets $ literal $ T.unwords $
             [ "#" <> ident | not (T.null ident)] ++ map ("." <>) classes
        return $ modifier <> marker <> contents <> marker
+
+-- | Provides the arguments for both `image:` and `image::`
+-- e.g.: sunset.jpg[Sunset,300,200]
+imageArguments :: PandocMonad m => WriterOptions ->
+  Attr -> [Inline] -> Text -> Text ->
+  ADW m (Doc Text)
+imageArguments opts attr altText src title = do
+  let txt = if null altText || (altText == [Str ""])
+               then [Str "image"]
+               else altText
+  linktext <- inlineListToAsciiDoc opts txt
+  let linktitle = if T.null title
+                     then empty
+                     else ",title=\"" <> literal title <> "\""
+      showDim dir = case dimension dir attr of
+                      Just (Percent a) ->
+                        ["scaledwidth=" <> text (show (Percent a))]
+                      Just dim         ->
+                        [text (show dir) <> "=" <>
+                          literal (showInPixel opts dim)]
+                      Nothing          ->
+                        []
+      dimList = showDim Width ++ showDim Height
+      dims = if null dimList
+                then empty
+                else "," <> mconcat (intersperse "," dimList)
+  return $ literal src <> "[" <> linktext <> linktitle <> dims <> "]"

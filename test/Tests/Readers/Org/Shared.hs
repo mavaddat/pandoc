@@ -1,8 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Tests.Readers.Org.Shared
-   Copyright   : © 2014-2020 Albert Krewinkel
+   Copyright   : © 2014-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <albert@zeitkraut.de>
@@ -18,7 +17,6 @@ module Tests.Readers.Org.Shared
   , tagSpan
   ) where
 
-import Prelude
 import Data.List (intersperse)
 import Data.Text (Text)
 import Tests.Helpers (ToString, purely, test)

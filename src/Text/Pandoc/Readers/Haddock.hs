@@ -17,8 +17,9 @@ module Text.Pandoc.Readers.Haddock
 
 import Control.Monad.Except (throwError)
 import Data.List (intersperse)
+import Data.List.NonEmpty (nonEmpty)
 import Data.Maybe (fromMaybe)
-import Data.Text (Text, unpack)
+import Data.Text (unpack)
 import qualified Data.Text as T
 import Documentation.Haddock.Parser
 import Documentation.Haddock.Types as H
@@ -28,15 +29,17 @@ import Text.Pandoc.Class.PandocMonad (PandocMonad)
 import Text.Pandoc.Definition
 import Text.Pandoc.Error
 import Text.Pandoc.Options
-import Text.Pandoc.Shared (crFilter, splitTextBy, trim)
+import Text.Pandoc.Sources (ToSources(..), sourcesToText)
+import Text.Pandoc.Shared (splitTextBy, trim)
 
 
 -- | Parse Haddock markup and return a 'Pandoc' document.
-readHaddock :: PandocMonad m
+readHaddock :: (PandocMonad m, ToSources a)
             => ReaderOptions
-            -> Text
+            -> a
             -> m Pandoc
-readHaddock opts s = case readHaddockEither opts (unpack (crFilter s)) of
+readHaddock opts s = case readHaddockEither opts
+                           (unpack . sourcesToText . toSources $ s) of
   Right result -> return result
   Left e       -> throwError e
 
@@ -86,13 +89,13 @@ docHToBlocks d' =
                     }
       -> let toCells = map (docHToBlocks . tableCellContents) . tableRowCells
              toRow = Row nullAttr . map B.simpleCell
-             toHeaderRow l = if null l then [] else [toRow l]
+             toHeaderRow l = [toRow l | not (null l)]
              (header, body) =
                if null headerRows
                   then ([], map toCells bodyRows)
                   else (toCells (head headerRows),
                         map toCells (tail headerRows ++ bodyRows))
-             colspecs = replicate (maximum (map length body))
+             colspecs = replicate (maybe 0 maximum (nonEmpty (map length body)))
                              (AlignDefault, ColWidthDefault)
          in  B.table B.emptyCaption
                      colspecs
@@ -128,7 +131,8 @@ docHToInlines isCode d' =
           DocIdentifier s -> B.codeWith ("",["haskell","identifier"],[]) $ T.pack s
           _               -> mempty
     DocIdentifierUnchecked s -> B.codeWith ("",["haskell","identifier"],[]) $ T.pack s
-    DocModule s -> B.codeWith ("",["haskell","module"],[]) $ T.pack s
+    DocModule s -> B.codeWith ("",["haskell","module"],[]) $
+                   T.pack (modLinkName s)
     DocWarning _ -> mempty -- TODO
     DocEmphasis d -> B.emph (docHToInlines isCode d)
     DocMonospaced (DocString s) -> B.code $ T.pack s

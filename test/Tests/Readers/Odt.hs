@@ -1,8 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Tests.Readers.Odt
-   Copyright   : © 2015-2020 John MacFarlane
+   Copyright   : © 2015-2021 John MacFarlane
                    2015 Martin Linnemann
    License     : GNU GPL, version 2 or above
 
@@ -14,7 +13,6 @@ Tests for the ODT reader.
 -}
 module Tests.Readers.Odt (tests) where
 
-import Prelude
 import Control.Monad (liftM)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as B
@@ -178,6 +176,7 @@ namesOfTestsComparingToNative   = [ "blockquote"
                                   , "referenceToText"
                                   , "simpleTable"
                                   , "simpleTableWithCaption"
+                                  , "tab"
 --                                , "table"
                                   , "textMixedStyles"
                                   , "tableWithContents"

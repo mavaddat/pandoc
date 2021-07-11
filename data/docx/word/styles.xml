@@ -350,6 +350,21 @@
         <w:right w:w="108" w:type="dxa" />
       </w:tblCellMar>
     </w:tblPr>
+    <w:tblStylePr w:type="firstRow">
+      <w:tblPr>
+        <w:jc w:val="left"/>
+        <w:tblInd w:w="0" w:type="dxa"/>
+      </w:tblPr>
+      <w:trPr>
+        <w:jc w:val="left"/>
+      </w:trPr>
+      <w:tcPr>
+        <w:vAlign w:val="bottom"/>
+        <w:tcBorders>
+          <w:bottom w:val="single"/>
+        </w:tcBorders>
+      </w:tcPr>
+    </w:tblStylePr>
   </w:style>
   <w:style w:type="paragraph" w:customStyle="1" w:styleId="DefinitionTerm">
     <w:name w:val="Definition Term" />
@@ -413,6 +428,10 @@
       <w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" />
       <w:sz w:val="22" />
     </w:rPr>
+  </w:style>
+  <w:style w:type="character" w:customStyle="1" w:styleId="SectionNumber">
+    <w:name w:val="Section Number" />
+    <w:basedOn w:val="BodyTextChar" />
   </w:style>
   <w:style w:type="character" w:styleId="FootnoteReference">
     <w:name w:val="Footnote Reference" />

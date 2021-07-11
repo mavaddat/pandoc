@@ -1,9 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RelaxedPolyRec    #-}
--- RelaxedPolyRec needed for inlinesBetween on GHC < 7
 {- |
    Module      : Text.Pandoc.Readers.MediaWiki
-   Copyright   : Copyright (C) 2012-2020 John MacFarlane
+   Copyright   : Copyright (C) 2012-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -38,17 +36,18 @@ import Text.Pandoc.Logging
 import Text.Pandoc.Options
 import Text.Pandoc.Parsing hiding (nested)
 import Text.Pandoc.Readers.HTML (htmlTag, isBlockTag, isCommentTag)
-import Text.Pandoc.Shared (crFilter, safeRead, stringify, stripTrailingNewlines,
+import Text.Pandoc.Shared (safeRead, stringify, stripTrailingNewlines,
                            trim, splitTextBy, tshow)
 import Text.Pandoc.Walk (walk)
 import Text.Pandoc.XML (fromEntities)
 
 -- | Read mediawiki from an input string and return a Pandoc document.
-readMediaWiki :: PandocMonad m
-              => ReaderOptions -- ^ Reader options
-              -> Text          -- ^ String to parse (assuming @'\n'@ line endings)
+readMediaWiki :: (PandocMonad m, ToSources a)
+              => ReaderOptions
+              -> a
               -> m Pandoc
 readMediaWiki opts s = do
+  let sources = toSources s
   parsed <- readWithM parseMediaWiki MWState{ mwOptions = opts
                                             , mwMaxNestingLevel = 4
                                             , mwNextLinkNumber  = 1
@@ -57,7 +56,7 @@ readMediaWiki opts s = do
                                             , mwLogMessages = []
                                             , mwInTT = False
                                             }
-            (crFilter s <> "\n")
+            sources
   case parsed of
     Right result -> return result
     Left e       -> throwError e
@@ -71,7 +70,7 @@ data MWState = MWState { mwOptions         :: ReaderOptions
                        , mwInTT            :: Bool
                        }
 
-type MWParser m = ParserT Text MWState m
+type MWParser m = ParserT Sources MWState m
 
 instance HasReaderOptions MWState where
   extractReaderOptions = mwOptions
@@ -114,12 +113,14 @@ newBlockTags = ["haskell","syntaxhighlight","source","gallery","references"]
 isBlockTag' :: Tag Text -> Bool
 isBlockTag' tag@(TagOpen t _) = (isBlockTag tag || t `elem` newBlockTags) &&
   t `notElem` eitherBlockOrInline
+isBlockTag' (TagClose "ref") = True -- needed so 'special' doesn't parse it
 isBlockTag' tag@(TagClose t) = (isBlockTag tag || t `elem` newBlockTags) &&
   t `notElem` eitherBlockOrInline
 isBlockTag' tag = isBlockTag tag
 
 isInlineTag' :: Tag Text -> Bool
 isInlineTag' (TagComment _) = True
+isInlineTag' (TagClose "ref") = False -- see below inlineTag
 isInlineTag' t              = not (isBlockTag' t)
 
 eitherBlockOrInline :: [Text]
@@ -233,7 +234,7 @@ table = do
                           then (hdr, rows')
                           else (replicate cols mempty, hdr:rows')
   let toRow = Row nullAttr . map B.simpleCell
-      toHeaderRow l = if null l then [] else [toRow l]
+      toHeaderRow l = [toRow l | not (null l)]
   return $ B.table (B.simpleCaption $ B.plain caption)
                    cellspecs
                    (TableHead nullAttr $ toHeaderRow headers)
@@ -285,7 +286,7 @@ tableCaption = try $ do
   skipSpaces
   sym "|+"
   optional (try $ parseAttrs *> skipSpaces *> char '|' *> blanklines)
-  (trimInlines . mconcat) <$>
+  trimInlines . mconcat <$>
     many (notFollowedBy (cellsep <|> rowsep) *> inline)
 
 tableRow :: PandocMonad m => MWParser m [((Alignment, Double), Blocks)]
@@ -436,7 +437,7 @@ defListItem :: PandocMonad m => MWParser m (Inlines, [Blocks])
 defListItem = try $ do
   terms <- mconcat . intersperse B.linebreak <$> many defListTerm
   -- we allow dd with no dt, or dt with no dd
-  defs  <- if B.isNull terms
+  defs  <- if null terms
               then notFollowedBy
                     (try $ skipMany1 (char ':') >> string "<math>") *>
                        many1 (listItem ':')
@@ -556,11 +557,17 @@ variable = try $ do
   contents <- manyTillChar anyChar (try $ string "}}}")
   return $ "{{{" <> contents <> "}}}"
 
+singleParaToPlain :: Blocks -> Blocks
+singleParaToPlain bs =
+  case B.toList bs of
+    [Para ils] -> B.fromList [Plain ils]
+    _ -> bs
+
 inlineTag :: PandocMonad m => MWParser m Inlines
 inlineTag = do
   (tag, _) <- lookAhead $ htmlTag isInlineTag'
   case tag of
-       TagOpen "ref" _ -> B.note . B.plain <$> inlinesInTags "ref"
+       TagOpen "ref" _ -> B.note . singleParaToPlain <$> blocksInTags "ref"
        TagOpen "nowiki" _ -> try $ do
           (_,raw) <- htmlTag (~== tag)
           if T.any (== '/') raw
@@ -680,19 +687,17 @@ url = do
 -- | Parses a list of inlines between start and end delimiters.
 inlinesBetween :: (PandocMonad m, Show b) => MWParser m a -> MWParser m b -> MWParser m Inlines
 inlinesBetween start end =
-  (trimInlines . mconcat) <$> try (start >> many1Till inner end)
-    where inner      = innerSpace <|> (notFollowedBy' (() <$ whitespace) >> inline)
-          innerSpace = try $ whitespace <* notFollowedBy' end
+  trimInlines . mconcat <$> try (start >> many1Till inline end)
 
 emph :: PandocMonad m => MWParser m Inlines
 emph = B.emph <$> nested (inlinesBetween start end)
-    where start = sym "''" >> lookAhead nonspaceChar
+    where start = sym "''"
           end   = try $ notFollowedBy' (() <$ strong) >> sym "''"
 
 strong :: PandocMonad m => MWParser m Inlines
 strong = B.strong <$> nested (inlinesBetween start end)
-    where start = sym "'''" >> lookAhead nonspaceChar
-          end   = try $ sym "'''"
+    where start = sym "'''"
+          end   = sym "'''"
 
 doubleQuotes :: PandocMonad m => MWParser m Inlines
 doubleQuotes = do

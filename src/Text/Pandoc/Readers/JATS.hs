@@ -14,7 +14,9 @@ Conversion of JATS XML to 'Pandoc' document.
 
 module Text.Pandoc.Readers.JATS ( readJATS ) where
 import Control.Monad.State.Strict
-import Data.Char (isDigit, isSpace, toUpper)
+import Control.Monad.Except (throwError)
+import Text.Pandoc.Error (PandocError(..))
+import Data.Char (isDigit, isSpace)
 import Data.Default
 import Data.Generics
 import Data.List (foldl', intersperse)
@@ -22,15 +24,17 @@ import qualified Data.Map as Map
 import Data.Maybe (maybeToList, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Lazy as TL
 import Text.HTML.TagSoup.Entity (lookupEntity)
 import Text.Pandoc.Builder
 import Text.Pandoc.Class.PandocMonad (PandocMonad)
 import Text.Pandoc.Options
-import Text.Pandoc.Shared (crFilter, safeRead)
+import Text.Pandoc.Shared (safeRead, extractSpaces)
 import Text.TeXMath (readMathML, writeTeX)
-import Text.XML.Light
+import Text.Pandoc.XML.Light
 import qualified Data.Set as S (fromList, member)
 import Data.Set ((\\))
+import Text.Pandoc.Sources (ToSources(..), sourcesToText)
 
 type JATS m = StateT JATSState m
 
@@ -49,42 +53,28 @@ instance Default JATSState where
                  , jatsContent = [] }
 
 
-readJATS :: PandocMonad m => ReaderOptions -> Text -> m Pandoc
+readJATS :: (PandocMonad m, ToSources a)
+         => ReaderOptions
+         -> a
+         -> m Pandoc
 readJATS _ inp = do
-  let tree = normalizeTree . parseXML
-               $ T.unpack $ crFilter inp
+  let sources = toSources inp
+  tree <- either (throwError . PandocXMLError "") return $
+            parseXMLContents (TL.fromStrict . sourcesToText $ sources)
   (bs, st') <- flip runStateT (def{ jatsContent = tree }) $ mapM parseBlock tree
   return $ Pandoc (jatsMeta st') (toList . mconcat $ bs)
 
--- normalize input, consolidating adjacent Text and CRef elements
-normalizeTree :: [Content] -> [Content]
-normalizeTree = everywhere (mkT go)
-  where go :: [Content] -> [Content]
-        go (Text (CData CDataRaw _ _):xs) = xs
-        go (Text (CData CDataText s1 z):Text (CData CDataText s2 _):xs) =
-           Text (CData CDataText (s1 ++ s2) z):xs
-        go (Text (CData CDataText s1 z):CRef r:xs) =
-           Text (CData CDataText (s1 ++ convertEntity r) z):xs
-        go (CRef r:Text (CData CDataText s1 z):xs) =
-             Text (CData CDataText (convertEntity r ++ s1) z):xs
-        go (CRef r1:CRef r2:xs) =
-             Text (CData CDataText (convertEntity r1 ++ convertEntity r2) Nothing):xs
-        go xs = xs
-
-convertEntity :: String -> String
-convertEntity e = Data.Maybe.fromMaybe (map toUpper e) (lookupEntity e)
-
 -- convenience function to get an attribute value, defaulting to ""
-attrValue :: String -> Element -> Text
+attrValue :: Text -> Element -> Text
 attrValue attr =
   fromMaybe "" . maybeAttrValue attr
 
-maybeAttrValue :: String -> Element -> Maybe Text
+maybeAttrValue :: Text -> Element -> Maybe Text
 maybeAttrValue attr elt =
-  T.pack <$> lookupAttrBy (\x -> qName x == attr) (elAttribs elt)
+  lookupAttrBy (\x -> qName x == attr) (elAttribs elt)
 
 -- convenience function
-named :: String -> Element -> Bool
+named :: Text -> Element -> Bool
 named s e = qName (elName e) == s
 
 --
@@ -150,10 +140,10 @@ getBlocks e =  mconcat <$>
 
 parseBlock :: PandocMonad m => Content -> JATS m Blocks
 parseBlock (Text (CData CDataRaw _ _)) = return mempty -- DOCTYPE
-parseBlock (Text (CData _ s _)) = if all isSpace s
+parseBlock (Text (CData _ s _)) = if T.all isSpace s
                                      then return mempty
-                                     else return $ plain $ trimInlines $ text $ T.pack s
-parseBlock (CRef x) = return $ plain $ str $ T.toUpper $ T.pack x
+                                     else return $ plain $ trimInlines $ text s
+parseBlock (CRef x) = return $ plain $ str $ T.toUpper x
 parseBlock (Elem e) =
   case qName (elName e) of
         "p" -> parseMixed para (elContent e)
@@ -189,7 +179,7 @@ parseBlock (Elem e) =
         _       -> getBlocks e
    where parseMixed container conts = do
            let (ils,rest) = break isBlockElement conts
-           ils' <- (trimInlines . mconcat) <$> mapM parseInline ils
+           ils' <- trimInlines . mconcat <$> mapM parseInline ils
            let p = if ils' == mempty then mempty else container ils'
            case rest of
                  []     -> return p
@@ -202,11 +192,11 @@ parseBlock (Elem e) =
                                 "" -> []
                                 x  -> [x]
            return $ codeBlockWith (attrValue "id" e, classes', [])
-                  $ trimNl $ textContentRecursive e
+                  $ trimNl $ strContentRecursive e
          parseBlockquote = do
             attrib <- case filterChild (named "attribution") e of
                              Nothing  -> return mempty
-                             Just z   -> (para . (str "— " <>) . mconcat)
+                             Just z   -> para . (str "— " <>) . mconcat
                                          <$>
                                               mapM parseInline (elContent z)
             contents <- getBlocks e
@@ -266,7 +256,7 @@ parseBlock (Elem e) =
                                                 Just "center" -> AlignCenter
                                                 _             -> AlignDefault
                       let toWidth c = do
-                            w <- findAttrText (unqual "colwidth") c
+                            w <- findAttr (unqual "colwidth") c
                             n <- safeRead $ "0" <> T.filter (\x -> isDigit x || x == '.') w
                             if n > 0 then Just n else Nothing
                       let numrows = foldl' max 0 $ map length bodyrows
@@ -281,7 +271,7 @@ parseBlock (Elem e) =
                                                             in  ColWidth . (/ tot) <$> ws'
                                                 Nothing  -> replicate numrows ColWidthDefault
                       let toRow = Row nullAttr . map simpleCell
-                          toHeaderRow l = if null l then [] else [toRow l]
+                          toHeaderRow l = [toRow l | not (null l)]
                       return $ table (simpleCaption $ plain capt)
                                      (zip aligns widths)
                                      (TableHead nullAttr $ toHeaderRow headrows)
@@ -309,7 +299,7 @@ parseBlock (Elem e) =
                      return $ headerWith (ident,[],[]) n' headerText <> b
 
 getInlines :: PandocMonad m => Element -> JATS m Inlines
-getInlines e' = (trimInlines . mconcat) <$>
+getInlines e' = trimInlines . mconcat <$>
                  mapM parseInline (elContent e')
 
 parseMetadata :: PandocMonad m => Element -> JATS m Blocks
@@ -317,6 +307,7 @@ parseMetadata e = do
   getTitle e
   getAuthors e
   getAffiliations e
+  getAbstract e
   return mempty
 
 getTitle :: PandocMonad m => Element -> JATS m ()
@@ -347,6 +338,14 @@ getAffiliations :: PandocMonad m => Element -> JATS m ()
 getAffiliations x = do
   affs <- mapM getInlines $ filterChildren (named "aff") x
   unless (null affs) $ addMeta "institute" affs
+
+getAbstract :: PandocMonad m => Element -> JATS m ()
+getAbstract e =
+  case filterElement (named "abstract") e of
+    Just s -> do
+      blks <- getBlocks s
+      addMeta "abstract" blks
+    Nothing -> pure ()
 
 getContrib :: PandocMonad m => Element -> JATS m Inlines
 getContrib x = do
@@ -428,16 +427,10 @@ parseRef e = do
        Nothing -> return $ Map.insert "id" (toMetaValue refId) mempty
        -- TODO handle mixed-citation
 
-findAttrText :: QName -> Element -> Maybe Text
-findAttrText x = fmap T.pack . findAttr x
-
 textContent :: Element -> Text
-textContent = T.pack . strContent
+textContent = strContent
 
-textContentRecursive :: Element -> Text
-textContentRecursive = T.pack . strContentRecursive
-
-strContentRecursive :: Element -> String
+strContentRecursive :: Element -> Text
 strContentRecursive = strContent .
   (\e' -> e'{ elContent = map elementToStr $ elContent e' })
 
@@ -446,19 +439,19 @@ elementToStr (Elem e') = Text $ CData CDataText (strContentRecursive e') Nothing
 elementToStr x = x
 
 parseInline :: PandocMonad m => Content -> JATS m Inlines
-parseInline (Text (CData _ s _)) = return $ text $ T.pack s
-parseInline (CRef ref) =
-  return . text . maybe (T.toUpper $ T.pack ref) T.pack $ lookupEntity ref
+parseInline (Text (CData _ s _)) = return $ text s
+parseInline (CRef ref) = return $ maybe (text $ T.toUpper ref) (text . T.pack)
+                                $ lookupEntity (T.unpack ref)
 parseInline (Elem e) =
   case qName (elName e) of
-        "italic" -> emph <$> innerInlines
-        "bold" -> strong <$> innerInlines
-        "strike" -> strikeout <$> innerInlines
-        "sub" -> subscript <$> innerInlines
-        "sup" -> superscript <$> innerInlines
-        "underline" -> underline <$> innerInlines
+        "italic" -> innerInlines emph
+        "bold" -> innerInlines strong
+        "strike" -> innerInlines strikeout
+        "sub" -> innerInlines subscript
+        "sup" -> innerInlines superscript
+        "underline" -> innerInlines underline
         "break" -> return linebreak
-        "sc" -> smallcaps <$> innerInlines
+        "sc" -> innerInlines smallcaps
 
         "code" -> codeWithLang
         "monospace" -> codeWithLang
@@ -468,14 +461,14 @@ parseInline (Elem e) =
             qt <- gets jatsQuoteType
             let qt' = if qt == SingleQuote then DoubleQuote else SingleQuote
             modify $ \st -> st{ jatsQuoteType = qt' }
-            contents <- innerInlines
+            contents <- innerInlines id
             modify $ \st -> st{ jatsQuoteType = qt }
             return $ if qt == SingleQuote
                         then singleQuoted contents
                         else doubleQuoted contents
 
         "xref" -> do
-            ils <- innerInlines
+            ils <- innerInlines id
             let rid = attrValue "rid" e
             let rids = T.words rid
             let refType = ("ref-type",) <$> maybeAttrValue "ref-type" e
@@ -492,10 +485,10 @@ parseInline (Elem e) =
                              ils
                         else linkWith attr ("#" <> rid) "" ils
         "ext-link" -> do
-             ils <- innerInlines
-             let title = fromMaybe "" $ findAttrText (QName "title" (Just "http://www.w3.org/1999/xlink") Nothing) e
+             ils <- innerInlines id
+             let title = fromMaybe "" $ findAttr (QName "title" (Just "http://www.w3.org/1999/xlink") Nothing) e
              let href = case findAttr (QName "href" (Just "http://www.w3.org/1999/xlink") Nothing) e of
-                               Just h -> T.pack h
+                               Just h -> h
                                _      -> "#" <> attrValue "rid" e
              let ils' = if ils == mempty then str href else ils
              let attr = (attrValue "id" e, [], [])
@@ -503,19 +496,20 @@ parseInline (Elem e) =
 
         "disp-formula" -> formula displayMath
         "inline-formula" -> formula math
-        "math" | qPrefix (elName e) == Just "mml" -> return . math $ mathML e
+        "math" | qURI (elName e) == Just "http://www.w3.org/1998/Math/MathML"
+                   -> return . math $ mathML e
         "tex-math" -> return . math $ textContent e
 
         "email" -> return $ link ("mailto:" <> textContent e) ""
                           $ str $ textContent e
         "uri" -> return $ link (textContent e) "" $ str $ textContent e
-        "fn" -> (note . mconcat) <$>
+        "fn" -> note . mconcat <$>
                          mapM parseBlock (elContent e)
-        _          -> innerInlines
-   where innerInlines = (trimInlines . mconcat) <$>
+        _          -> innerInlines id
+   where innerInlines f = extractSpaces f . mconcat <$>
                           mapM parseInline (elContent e)
          mathML x =
-            case readMathML . T.pack . showElement $ everywhere (mkT removePrefix) x of
+            case readMathML . showElement $ everywhere (mkT removePrefix) x of
                 Left _ -> mempty
                 Right m -> writeTeX m
          formula constructor = do
@@ -526,11 +520,12 @@ parseInline (Elem e) =
                             filterChildren isMathML whereToLook
             return . mconcat . take 1 . map constructor $ texMaths ++ mathMLs
 
-         isMathML x = qName   (elName x) == "math" &&
-                      qPrefix (elName x) == Just "mml"
+         isMathML x = qName (elName x) == "math" &&
+                      qURI  (elName x) ==
+                                      Just "http://www.w3.org/1998/Math/MathML"
          removePrefix elname = elname { qPrefix = Nothing }
          codeWithLang = do
            let classes' = case attrValue "language" e of
                                "" -> []
                                l  -> [l]
-           return $ codeWith (attrValue "id" e,classes',[]) $ textContentRecursive e
+           return $ codeWith (attrValue "id" e,classes',[]) $ strContentRecursive e

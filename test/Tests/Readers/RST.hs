@@ -1,9 +1,8 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {- |
    Module      : Tests.Readers.RST
-   Copyright   : © 2006-2020 John MacFarlane
+   Copyright   : © 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -14,7 +13,6 @@ Tests for the RST reader.
 -}
 module Tests.Readers.RST (tests) where
 
-import Prelude
 import Data.Text (Text)
 import qualified Data.Text as T
 import Test.Tasty

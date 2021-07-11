@@ -1,6 +1,6 @@
 {- |
    Module      : Text.Pandoc.Readers.Org.Parsing
-   Copyright   : Copyright (C) 2014-2020 Albert Krewinkel
+   Copyright   : Copyright (C) 2014-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
@@ -63,8 +63,7 @@ module Text.Pandoc.Readers.Org.Parsing
   , ellipses
   , citeKey
   , gridTableWith
-  , insertIncludedFileF
-  -- * Re-exports from Text.Pandoc.Parsec
+  , insertIncludedFile
   , runParser
   , runParserT
   , getInput
@@ -100,21 +99,22 @@ module Text.Pandoc.Readers.Org.Parsing
   , getState
   , updateState
   , SourcePos
+  , sourceName
   , getPosition
   ) where
 
 import Data.Text (Text)
 import Text.Pandoc.Readers.Org.ParserState
 
-import Text.Pandoc.Parsing hiding (F, anyLine, blanklines, newline,
-                            parseFromString)
+import Text.Pandoc.Parsing hiding (anyLine, blanklines, newline,
+                                   parseFromString)
 import qualified Text.Pandoc.Parsing as P
 
 import Control.Monad (guard)
 import Control.Monad.Reader (ReaderT)
 
 -- | The parser used to read org files.
-type OrgParser m = ParserT Text OrgParserState (ReaderT OrgParserLocal m)
+type OrgParser m = ParserT Sources OrgParserState (ReaderT OrgParserLocal m)
 
 --
 -- Adaptions and specializations of parsing utilities

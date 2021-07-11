@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 {- |
    Module      : Text.Pandoc.Readers.Txt2Tags
    Copyright   : Copyright (C) 2014 Matthew Pickering
@@ -19,6 +20,7 @@ import Control.Monad.Except (catchError, throwError)
 import Control.Monad.Reader (Reader, asks, runReader)
 import Data.Default
 import Data.List (intercalate, transpose)
+import Data.List.NonEmpty (nonEmpty)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -31,9 +33,9 @@ import Data.Time (defaultTimeLocale)
 import Text.Pandoc.Definition
 import Text.Pandoc.Options
 import Text.Pandoc.Parsing hiding (space, spaces, uri)
-import Text.Pandoc.Shared (compactify, compactifyDL, crFilter, escapeURI)
+import Text.Pandoc.Shared (compactify, compactifyDL, escapeURI)
 
-type T2T = ParserT Text ParserState (Reader T2TMeta)
+type T2T = ParserT Sources ParserState (Reader T2TMeta)
 
 -- | An object for the T2T macros meta information
 -- the contents of each field is simply substituted verbatim into the file
@@ -53,25 +55,28 @@ getT2TMeta = do
     inps <- P.getInputFiles
     outp <- fromMaybe "" <$> P.getOutputFile
     curDate <- formatTime defaultTimeLocale "%F" <$> P.getZonedTime
-    let getModTime = fmap (formatTime defaultTimeLocale "%T") .
-                       P.getModificationTime
-    curMtime <- case inps of
-                  [] -> formatTime defaultTimeLocale "%T" <$> P.getZonedTime
-                  _ -> catchError
-                        (maximum <$> mapM getModTime inps)
-                        (const (return ""))
-    return $ T2TMeta (T.pack curDate) (T.pack curMtime) (intercalate ", " inps) outp
+    curMtime <- catchError
+                 (mapM P.getModificationTime inps >>=
+                   (\case
+                       Nothing ->
+                         formatTime defaultTimeLocale "%T" <$> P.getZonedTime
+                       Just ts -> return $
+                         formatTime defaultTimeLocale "%T" $ maximum ts)
+                    . nonEmpty)
+                (const (return ""))
+    return $ T2TMeta (T.pack curDate) (T.pack curMtime)
+                     (intercalate ", " inps) outp
 
 -- | Read Txt2Tags from an input string returning a Pandoc document
-readTxt2Tags :: PandocMonad m
+readTxt2Tags :: (PandocMonad m, ToSources a)
              => ReaderOptions
-             -> Text
+             -> a
              -> m Pandoc
 readTxt2Tags opts s = do
+  let sources = ensureFinalNewlines 2 (toSources s)
   meta <- getT2TMeta
   let parsed = flip runReader meta $
-        readWithM parseT2T (def {stateOptions = opts}) $
-        crFilter s <> "\n\n"
+        readWithM parseT2T (def {stateOptions = opts}) sources
   case parsed of
     Right result -> return result
     Left e       -> throwError e
@@ -261,13 +266,13 @@ table = try $ do
   rows <- many1 (many commentLine *> tableRow)
   let columns = transpose rows
   let ncolumns = length columns
-  let aligns = map (foldr1 findAlign . map fst) columns
+  let aligns = map (fromMaybe AlignDefault . foldr findAlign Nothing) columns
   let rows' = map (map snd) rows
-  let size = maximum (map length rows')
+  let size = maybe 0 maximum $ nonEmpty $ map length rows'
   let rowsPadded = map (pad size) rows'
   let headerPadded = if null tableHeader then mempty else pad size tableHeader
   let toRow = Row nullAttr . map B.simpleCell
-      toHeaderRow l = if null l then [] else [toRow l]
+      toHeaderRow l = [toRow l | not (null l)]
   return $ B.table B.emptyCaption
                     (zip aligns (replicate ncolumns ColWidthDefault))
                       (TableHead nullAttr $ toHeaderRow headerPadded)
@@ -278,10 +283,11 @@ pad :: (Monoid a) => Int -> [a] -> [a]
 pad n xs = xs ++ replicate (n - length xs) mempty
 
 
-findAlign :: Alignment -> Alignment -> Alignment
-findAlign x y
-  | x == y = x
-  | otherwise = AlignDefault
+findAlign :: (Alignment, a) -> Maybe Alignment -> Maybe Alignment
+findAlign (x,_) (Just y)
+  | x == y = Just x
+  | otherwise = Just AlignDefault
+findAlign (x,_) Nothing = Just x
 
 headerRow :: T2T [(Alignment, Blocks)]
 headerRow = genericRow (string "||")
@@ -464,7 +470,7 @@ macro = try $ do
   name <- string "%%" *> oneOfStringsCI (map fst commands)
   optional (try $ enclosed (char '(') (char ')') anyChar)
   lookAhead (spaceChar <|> oneOf specialChars <|> newline)
-  maybe (return mempty) (\f -> B.str <$> asks f) (lookup name commands)
+  maybe (return mempty) (\f -> asks (B.str . f)) (lookup name commands)
   where
     commands = [ ("date", date), ("mtime", mtime)
                , ("infile", T.pack . infile), ("outfile", T.pack . outfile)]
@@ -472,8 +478,28 @@ macro = try $ do
 -- raw URLs in text are automatically linked
 url :: T2T Inlines
 url = try $ do
-  (rawUrl, escapedUrl) <- try uri <|> emailAddress
+  (rawUrl, escapedUrl) <- try uri <|> emailAddress'
   return $ B.link rawUrl "" (B.str escapedUrl)
+
+emailAddress' :: T2T (Text, Text)
+emailAddress' = do
+  (base, mailURI) <- emailAddress
+  query <- option "" emailQuery
+  return (base <> query, mailURI <> query)
+
+emailQuery :: T2T Text
+emailQuery = do
+  char '?'
+  parts <- kv `sepBy1` (char '&')
+  return $ "?" <> T.intercalate "&" parts
+
+kv :: T2T Text
+kv = do
+  k <- T.pack <$> many1 alphaNum
+  char '='
+  let vchar = alphaNum <|> try (oneOf "%._/~:,=$@&+-;*" <* lookAhead alphaNum)
+  v <- T.pack <$> many1 vchar
+  return (k <> "=" <> v)
 
 uri :: T2T (Text, Text)
 uri = try $ do
@@ -564,7 +590,7 @@ getTarget = do
               _                               -> "html"
 
 atStart :: T2T ()
-atStart = (sourceColumn <$> getPosition) >>= guard . (== 1)
+atStart = getPosition >>= guard . (== 1) . sourceColumn
 
 ignoreSpacesCap :: T2T Text -> T2T Text
 ignoreSpacesCap p = T.toLower <$> (spaces *> p <* spaces)

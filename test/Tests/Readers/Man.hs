@@ -2,7 +2,7 @@
 {- |
    Module      : Tests.Readers.Man
    Copyright   : © 2018-2019 Yan Pas <yanp.bugz@gmail.com>,
-                   2018-2020 John MacFarlane
+                   2018-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -13,7 +13,6 @@ Tests for the Man reader.
 -}
 module Tests.Readers.Man (tests) where
 
-import Prelude
 import Data.Text (Text)
 import Test.Tasty
 import Tests.Helpers
@@ -68,7 +67,7 @@ tests = [
   testGroup "Escapes" [
       "fonts" =:
       "aa\\fIbb\\fRcc"
-      =?>para (str "aa" <> (emph $ str "bb") <> str "cc")
+      =?>para (str "aa" <> emph (str "bb") <> str "cc")
     , "nested fonts" =:
       "\\f[BI]hi\\f[I] there\\f[R]"
       =?> para (emph (strong (text "hi") <> text " there"))

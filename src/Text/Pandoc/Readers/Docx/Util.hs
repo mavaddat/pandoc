@@ -1,7 +1,8 @@
+{-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Readers.Docx.StyleMaps
    Copyright   : © 2014-2020 Jesse Rosenthal <jrosenthal@jhu.edu>,
-                   2014-2020 John MacFarlane <jgm@berkeley.edu>,
+                   2014-2021 John MacFarlane <jgm@berkeley.edu>,
                    2015 Nikolay Yakimov <root@livid.pp.ru>
    License     : GNU GPL, version 2 or above
 
@@ -18,51 +19,52 @@ module Text.Pandoc.Readers.Docx.Util (
                                       , elemToNameSpaces
                                       , findChildByName
                                       , findChildrenByName
-                                      , findAttrText
+                                      , findElementByName
                                       , findAttrByName
-                                      , findAttrTextByName
                                       ) where
 
-import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
-import Text.XML.Light
+import Data.Text (Text)
+import Text.Pandoc.XML.Light
+import qualified Data.Map as M
 
-type NameSpaces = [(String, String)]
+type NameSpaces = M.Map Text Text
 
 elemToNameSpaces :: Element -> NameSpaces
-elemToNameSpaces = mapMaybe attrToNSPair . elAttribs
+elemToNameSpaces = foldr (\(Attr qn val) ->
+                             case qn of
+                               QName s _ (Just "xmlns") -> M.insert s val
+                               _ -> id) mempty . elAttribs
 
-attrToNSPair :: Attr -> Maybe (String, String)
-attrToNSPair (Attr (QName s _ (Just "xmlns")) val) = Just (s, val)
-attrToNSPair _                                     = Nothing
-
-elemName :: NameSpaces -> String -> String -> QName
+elemName :: NameSpaces -> Text -> Text -> QName
 elemName ns prefix name =
-  QName name (lookup prefix ns) (if null prefix then Nothing else Just prefix)
+  QName name (M.lookup prefix ns)
+             (if T.null prefix then Nothing else Just prefix)
 
-isElem :: NameSpaces -> String -> String -> Element -> Bool
+isElem :: NameSpaces -> Text -> Text -> Element -> Bool
 isElem ns prefix name element =
-  let ns' = ns ++ elemToNameSpaces element
+  let ns' = ns <> elemToNameSpaces element
   in qName (elName element) == name &&
-     qURI (elName element) == lookup prefix ns'
+     qURI (elName element) == M.lookup prefix ns'
 
-findChildByName :: NameSpaces -> String -> String -> Element -> Maybe Element
+findChildByName :: NameSpaces -> Text -> Text -> Element -> Maybe Element
 findChildByName ns pref name el =
-  let ns' = ns ++ elemToNameSpaces el
+  let ns' = ns <> elemToNameSpaces el
   in  findChild (elemName ns' pref name) el
 
-findChildrenByName :: NameSpaces -> String -> String -> Element -> [Element]
+findChildrenByName :: NameSpaces -> Text -> Text -> Element -> [Element]
 findChildrenByName ns pref name el =
-  let ns' = ns ++ elemToNameSpaces el
+  let ns' = ns <> elemToNameSpaces el
   in  findChildren (elemName ns' pref name) el
 
-findAttrText :: QName -> Element -> Maybe T.Text
-findAttrText x = fmap T.pack . findAttr x
+-- | Like 'findChildrenByName', but searches descendants.
+findElementByName :: NameSpaces -> Text -> Text -> Element -> Maybe Element
+findElementByName ns pref name el =
+  let ns' = ns <> elemToNameSpaces el
+  in  findElement (elemName ns' pref name) el
 
-findAttrByName :: NameSpaces -> String -> String -> Element -> Maybe String
+findAttrByName :: NameSpaces -> Text -> Text -> Element -> Maybe Text
 findAttrByName ns pref name el =
-  let ns' = ns ++ elemToNameSpaces el
+  let ns' = ns <> elemToNameSpaces el
   in  findAttr (elemName ns' pref name) el
 
-findAttrTextByName :: NameSpaces -> String -> String -> Element -> Maybe T.Text
-findAttrTextByName a b c = fmap T.pack . findAttrByName a b c

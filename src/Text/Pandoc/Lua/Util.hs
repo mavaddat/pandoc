@@ -3,8 +3,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Lua.Util
-   Copyright   : © 2012–2020 John MacFarlane,
-                 © 2017-2020 Albert Krewinkel
+   Copyright   : © 2012-2021 John MacFarlane,
+                 © 2017-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
@@ -80,7 +80,7 @@ instance (Pushable a, PushViaCall b) => PushViaCall (a -> b) where
 pushViaCall :: PushViaCall a => String -> a
 pushViaCall fn = pushViaCall' fn (return ()) 0
 
--- | Call a pandoc element constructor within lua, passing all given arguments.
+-- | Call a pandoc element constructor within Lua, passing all given arguments.
 pushViaConstructor :: PushViaCall a => String -> a
 pushViaConstructor pandocFn = pushViaCall ("pandoc." ++ pandocFn)
 

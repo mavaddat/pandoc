@@ -62,7 +62,7 @@ import Text.Pandoc.Definition (Pandoc, Inline (Image))
 import Text.Pandoc.Error (PandocError (..))
 import Text.Pandoc.Logging (LogMessage (..), messageVerbosity, showLogMessage)
 import Text.Pandoc.MIME (MimeType)
-import Text.Pandoc.MediaBag (MediaBag, lookupMedia, mediaDirectory)
+import Text.Pandoc.MediaBag (MediaBag, MediaItem(..), lookupMedia, mediaItems)
 import Text.Pandoc.Walk (walk)
 import qualified Control.Exception as E
 import qualified Data.ByteString as B
@@ -183,7 +183,7 @@ getModificationTime = liftIOError System.Directory.getModificationTime
 logOutput :: (PandocMonad m, MonadIO m) => LogMessage -> m ()
 logOutput msg = liftIO $ do
   UTF8.hPutStr stderr $
-      "[" ++ show (messageVerbosity msg) ++ "] "
+      "[" <> T.pack (show (messageVerbosity msg)) <> "] "
   alertIndent $ T.lines $ showLogMessage msg
 
 -- | Prints the list of lines to @stderr@, indenting every but the first
@@ -191,41 +191,41 @@ logOutput msg = liftIO $ do
 alertIndent :: [Text] -> IO ()
 alertIndent [] = return ()
 alertIndent (l:ls) = do
-  UTF8.hPutStrLn stderr $ unpack l
+  UTF8.hPutStrLn stderr l
   mapM_ go ls
   where go l' = do UTF8.hPutStr stderr "  "
-                   UTF8.hPutStrLn stderr $ unpack l'
+                   UTF8.hPutStrLn stderr l'
 
 -- | Extract media from the mediabag into a directory.
 extractMedia :: (PandocMonad m, MonadIO m) => FilePath -> Pandoc -> m Pandoc
 extractMedia dir d = do
   media <- getMediaBag
-  case [fp | (fp, _, _) <- mediaDirectory media] of
-    []  -> return d
-    fps -> do
-      mapM_ (writeMedia dir media) fps
-      return $ walk (adjustImagePath dir fps) d
+  let items = mediaItems media
+  if null items
+    then return d
+    else do
+      mapM_ (writeMedia dir) items
+      return $ walk (adjustImagePath dir media) d
 
 -- | Write the contents of a media bag to a path.
 writeMedia :: (PandocMonad m, MonadIO m)
-           => FilePath -> MediaBag -> FilePath
+           => FilePath
+           -> (FilePath, MimeType, BL.ByteString)
            -> m ()
-writeMedia dir mediabag subpath = do
-  -- we join and split to convert a/b/c to a\b\c on Windows;
-  -- in zip containers all paths use /
-  let fullpath = dir </> unEscapeString (normalise subpath)
-  let mbcontents = lookupMedia subpath mediabag
-  case mbcontents of
-       Nothing -> throwError $ PandocResourceNotFound $ pack subpath
-       Just (_, bs) -> do
-         report $ Extracting $ pack fullpath
-         liftIOError (createDirectoryIfMissing True) (takeDirectory fullpath)
-         logIOError $ BL.writeFile fullpath bs
+writeMedia dir (fp, _mt, bs) = do
+  -- we normalize to get proper path separators for the platform
+  let fullpath = normalise $ dir </> fp
+  liftIOError (createDirectoryIfMissing True) (takeDirectory fullpath)
+  logIOError $ BL.writeFile fullpath bs
 
 -- | If the given Inline element is an image with a @src@ path equal to
 -- one in the list of @paths@, then prepends @dir@ to the image source;
 -- returns the element unchanged otherwise.
-adjustImagePath :: FilePath -> [FilePath] -> Inline -> Inline
-adjustImagePath dir paths (Image attr lab (src, tit))
-   | unpack src `elem` paths = Image attr lab (pack dir <> "/" <> src, tit)
+adjustImagePath :: FilePath -> MediaBag -> Inline -> Inline
+adjustImagePath dir mediabag (Image attr lab (src, tit)) =
+  case lookupMedia (T.unpack src) mediabag of
+    Nothing -> Image attr lab (src, tit)
+    Just item ->
+      let fullpath = dir <> "/" <> mediaPath item
+      in  Image attr lab (T.pack fullpath, tit)
 adjustImagePath _ _ x = x

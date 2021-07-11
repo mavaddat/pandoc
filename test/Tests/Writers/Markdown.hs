@@ -1,9 +1,7 @@
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 module Tests.Writers.Markdown (tests) where
 
-import Prelude
 import Data.Text (unpack)
 import Test.Tasty
 import Tests.Helpers
@@ -12,7 +10,9 @@ import Text.Pandoc.Arbitrary ()
 import Text.Pandoc.Builder
 
 defopts :: WriterOptions
-defopts = def{ writerExtensions = pandocExtensions }
+defopts = def
+  { writerExtensions = pandocExtensions
+  , writerSetextHeaders = True }
 
 markdown :: (ToPandoc a) => a -> String
 markdown = unpack . purely (writeMarkdown defopts) . toPandoc

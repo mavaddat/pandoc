@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {- |
    Module      : Text.Pandoc.Templates
-   Copyright   : Copyright (C) 2009-2020 John MacFarlane
+   Copyright   : Copyright (C) 2009-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -34,6 +34,7 @@ import Control.Monad.Except (catchError, throwError)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Pandoc.Error
+import System.IO.Error (isDoesNotExistError)
 
 -- | Wrap a Monad in this if you want partials to
 -- be taken only from the default data files.
@@ -70,6 +71,9 @@ getTemplate tp = UTF8.toText <$>
              PandocResourceNotFound _ ->
                 -- see #5987 on reason for takeFileName
                 readDataFile ("templates" </> takeFileName tp)
+             PandocIOError _ ioe | isDoesNotExistError ioe ->
+                -- see #5987 on reason for takeFileName
+                readDataFile ("templates" </> takeFileName tp)
              _ -> throwError e))
 
 -- | Get default template for the specified writer.
@@ -80,6 +84,7 @@ getDefaultTemplate writer = do
   let format = T.takeWhile (`notElem` ("+-" :: String)) writer  -- strip off extensions
   case format of
        "native"  -> return ""
+       "csljson" -> return ""
        "json"    -> return ""
        "docx"    -> return ""
        "fb2"     -> return ""
@@ -97,6 +102,7 @@ getDefaultTemplate writer = do
        "markdown_mmd"      -> getDefaultTemplate "markdown"
        "markdown_phpextra" -> getDefaultTemplate "markdown"
        "gfm"               -> getDefaultTemplate "commonmark"
+       "commonmark_x"      -> getDefaultTemplate "commonmark"
        _        -> do
          let fname = "templates" </> "default" <.> T.unpack format
          UTF8.toText <$> readDataFile fname

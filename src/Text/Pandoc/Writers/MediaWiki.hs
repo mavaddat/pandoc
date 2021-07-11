@@ -2,7 +2,7 @@
 {-# LANGUAGE ViewPatterns      #-}
 {- |
    Module      : Text.Pandoc.Writers.MediaWiki
-   Copyright   : Copyright (C) 2008-2020 John MacFarlane
+   Copyright   : Copyright (C) 2008-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -135,15 +135,22 @@ blockToMediaWiki (Header level _ inlines) = do
   let eqs = T.replicate level "="
   return $ eqs <> " " <> contents <> " " <> eqs <> "\n"
 
-blockToMediaWiki (CodeBlock (_,classes,_) str) = do
+blockToMediaWiki (CodeBlock (_,classes,keyvals) str) = do
   let at  = Set.fromList classes `Set.intersection` highlightingLangs
+  let numberLines = any (`elem` ["number","numberLines", "number-lines"])
+                    classes
+  let start = lookup "startFrom" keyvals
   return $
     case Set.toList at of
        [] -> "<pre" <> (if null classes
                            then ">"
                            else " class=\"" <> T.unwords classes <> "\">") <>
              escapeText str <> "</pre>"
-       (l:_) -> "<source lang=\"" <> l <> "\">" <> str <> "</source>"
+       (l:_) -> "<syntaxhighlight lang=\"" <> l <> "\"" <>
+                (if numberLines then " line" else "") <>
+                maybe "" (\x -> " start=\"" <> x <> "\"") start <>
+                ">" <> str <>
+                "</syntaxhighlight>"
             -- note:  no escape!  even for <!
 
 blockToMediaWiki (BlockQuote blocks) = do

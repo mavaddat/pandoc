@@ -1,8 +1,8 @@
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ViewPatterns      #-}
 {- |
    Module      : Text.Pandoc.XML
-   Copyright   : Copyright (C) 2006-2020 John MacFarlane
+   Copyright   : Copyright (C) 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -13,6 +13,7 @@ Functions for escaping and formatting XML.
 -}
 module Text.Pandoc.XML ( escapeCharForXML,
                          escapeStringForXML,
+                         escapeNCName,
                          inTags,
                          selfClosingTag,
                          inTagsSimple,
@@ -24,7 +25,7 @@ module Text.Pandoc.XML ( escapeCharForXML,
                          html5Attributes,
                          rdfaAttributes ) where
 
-import Data.Char (isAscii, isSpace, ord)
+import Data.Char (isAscii, isSpace, ord, isLetter, isDigit)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.HTML.TagSoup.Entity (lookupEntity, htmlEntities)
@@ -54,7 +55,7 @@ escapeStringForXML = T.concatMap escapeCharForXML . T.filter isLegalXMLChar
 
 -- | Escape newline characters as &#10;
 escapeNls :: Text -> Text
-escapeNls = T.concatMap $ \x -> case x of
+escapeNls = T.concatMap $ \case
   '\n' -> "&#10;"
   c    -> T.singleton c
 
@@ -119,26 +120,48 @@ html5EntityMap = foldr go mempty htmlEntities
              where ent' = T.takeWhile (/=';') (T.pack ent)
            _   -> entmap
 
+-- | Converts a string into an NCName, i.e., an XML name without colons.
+-- Disallowed characters are escaped using @ux%x@, where @%x@ is the
+-- hexadecimal unicode identifier of the escaped character.
+escapeNCName :: Text -> Text
+escapeNCName t = case T.uncons t of
+  Nothing -> T.empty
+  Just (c, cs) -> escapeStartChar c <> T.concatMap escapeNCNameChar cs
+  where
+    escapeStartChar :: Char -> Text
+    escapeStartChar c = if isLetter c || c == '_'
+                        then T.singleton c
+                        else escapeChar c
 
--- Unescapes XML entities
+    escapeNCNameChar :: Char -> Text
+    escapeNCNameChar c = if isNCNameChar c
+                         then T.singleton c
+                         else escapeChar c
+
+    isNCNameChar :: Char -> Bool
+    isNCNameChar c = isLetter c || c `elem` ("_-.·" :: String) || isDigit c
+      || '\x0300' <= c && c <= '\x036f'
+      || '\x203f' <= c && c <= '\x2040'
+
+    escapeChar :: Char -> Text
+    escapeChar = T.pack . printf "U%04X" . ord
+
+-- | Unescapes XML entities
 fromEntities :: Text -> Text
-fromEntities = T.pack . fromEntities'
+fromEntities t
+  = let (x, y) = T.break (== '&') t
+     in if T.null y
+           then t
+           else x <>
+             let (ent, rest) = T.break (\c -> isSpace c || c == ';') y
+                 rest' = case T.uncons rest of
+                            Just (';',ys) -> ys
+                            _ -> rest
+                 ent' = T.drop 1 ent <> ";"
+              in case T.pack <$> lookupEntity (T.unpack ent') of
+                   Just c  -> c <> fromEntities rest'
+                   Nothing  -> ent <> fromEntities rest
 
-fromEntities' :: Text -> String
-fromEntities' (T.uncons -> Just ('&', xs)) =
-  case lookupEntity $ T.unpack ent' of
-        Just c  -> c <> fromEntities' rest
-        Nothing -> "&" <> fromEntities' xs
-    where (ent, rest) = case T.break (\c -> isSpace c || c == ';') xs of
-                          (zs,T.uncons -> Just (';',ys)) -> (zs,ys)
-                          (zs, ys) -> (zs,ys)
-          ent'
-            | Just ys <- T.stripPrefix "#X" ent = "#x" <> ys  -- workaround tagsoup bug
-            | Just ('#', _) <- T.uncons ent     = ent
-            | otherwise                         = ent <> ";"
-fromEntities' t = case T.uncons t of
-  Just (x, xs) -> x : fromEntities' xs
-  Nothing      -> ""
 
 html5Attributes :: Set.Set Text
 html5Attributes = Set.fromList

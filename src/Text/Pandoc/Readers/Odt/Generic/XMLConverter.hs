@@ -1,5 +1,7 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections   #-}
 {-# LANGUAGE GADTs           #-}
+{-# LANGUAGE LambdaCase      #-}
 {-# LANGUAGE PatternGuards   #-}
 {- |
    Module      : Text.Pandoc.Readers.Odt.Generic.XMLConverter
@@ -59,15 +61,15 @@ import           Control.Arrow
 import           Data.Bool ( bool )
 import           Data.Either ( rights )
 import qualified Data.Map             as M
-import qualified Data.Text            as T
+import           Data.Text (Text)
 import           Data.Default
 import           Data.Maybe
+import           Data.List (foldl')
 
-import qualified Text.XML.Light       as XML
+import qualified Text.Pandoc.XML.Light as XML
 
 import           Text.Pandoc.Readers.Odt.Arrows.State
 import           Text.Pandoc.Readers.Odt.Arrows.Utils
-
 import           Text.Pandoc.Readers.Odt.Generic.Namespaces
 import           Text.Pandoc.Readers.Odt.Generic.Utils
 import           Text.Pandoc.Readers.Odt.Generic.Fallible
@@ -77,13 +79,13 @@ import           Text.Pandoc.Readers.Odt.Generic.Fallible
 --------------------------------------------------------------------------------
 
 --
-type ElementName           = String
-type AttributeName         = String
-type AttributeValue        = String
-type TextAttributeValue    = T.Text
+type ElementName           = Text
+type AttributeName         = Text
+type AttributeValue        = Text
+type TextAttributeValue    = Text
 
 --
-type NameSpacePrefix       = String
+type NameSpacePrefix       = Text
 
 --
 type NameSpacePrefixes nsID = M.Map nsID NameSpacePrefix
@@ -291,7 +293,7 @@ readNSattributes         = fromState $ \state -> maybe (state, failEmpty     )
                          => XMLConverterState nsID extraState
                          -> Maybe (XMLConverterState nsID extraState)
     extractNSAttrs startState
-                         = foldl (\state d -> state >>= addNS d)
+                         = foldl' (\state d -> state >>= addNS d)
                                  (Just startState)
                                  nsAttribs
       where nsAttribs    = mapMaybe readNSattr (XML.elAttribs element)
@@ -460,7 +462,7 @@ lookupDefaultingAttr     :: (NameSpaceID nsID, Lookupable a, Default a)
 lookupDefaultingAttr nsID attrName
                          = lookupAttrWithDefault nsID attrName def
 
--- | Return value as a (Maybe String)
+-- | Return value as a (Maybe Text)
 findAttr'               :: (NameSpaceID nsID)
                         => nsID -> AttributeName
                         -> XMLConverter nsID extraState x (Maybe AttributeValue)
@@ -476,7 +478,6 @@ findAttrText' nsID attrName
                         =         qualifyName nsID attrName
                               &&& getCurrentElement
                           >>% XML.findAttr
-                          >>^ fmap T.pack
 
 -- | Return value as string or fail
 findAttr               :: (NameSpaceID nsID)
@@ -491,7 +492,6 @@ findAttrText           :: (NameSpaceID nsID)
                        -> FallibleXMLConverter nsID extraState x TextAttributeValue
 findAttrText nsID attrName
                        = findAttr' nsID attrName
-                         >>^ fmap T.pack
                          >>> maybeToChoice
 
 -- | Return value as string or return provided default value
@@ -510,7 +510,7 @@ findAttrTextWithDefault :: (NameSpaceID nsID)
                         -> XMLConverter nsID extraState x TextAttributeValue
 findAttrTextWithDefault nsID attrName deflt
                        = findAttr' nsID attrName
-                         >>^ maybe deflt T.pack
+                         >>^ fromMaybe deflt
 
 -- | Read and return value or fail
 readAttr               :: (NameSpaceID nsID, Read attrValue)
@@ -691,7 +691,7 @@ makeMatcherC nsID name c = (    second (    contentToElem
                             >>% recover)
                     &&&^ snd
         contentToElem :: FallibleXMLConverter nsID extraState XML.Content XML.Element
-        contentToElem = arr $ \e -> case e of
+        contentToElem = arr $ \case
                                      XML.Elem e' -> succeedWith e'
                                      _           -> failEmpty
 
@@ -747,7 +747,7 @@ matchContent lookups fallback
 -- Internals
 --------------------------------------------------------------------------------
 
-stringToBool' :: String -> Maybe Bool
+stringToBool' :: Text -> Maybe Bool
 stringToBool' val | val `elem` trueValues  = Just True
                   | val `elem` falseValues = Just False
                   | otherwise              = Nothing

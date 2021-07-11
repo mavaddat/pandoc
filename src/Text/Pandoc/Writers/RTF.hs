@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings   #-}
 {- |
    Module      : Text.Pandoc.Writers.RTF
-   Copyright   : Copyright (C) 2006-2020 John MacFarlane
+   Copyright   : Copyright (C) 2006-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -16,7 +16,7 @@ module Text.Pandoc.Writers.RTF ( writeRTF
 import Control.Monad.Except (catchError, throwError)
 import Control.Monad
 import qualified Data.ByteString as B
-import Data.Char (chr, isDigit, ord)
+import Data.Char (chr, isDigit, ord, isAlphaNum)
 import qualified Data.Map as M
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -137,15 +137,21 @@ handleUnicode = T.concatMap $ \c ->
 
 -- | Escape special characters.
 escapeSpecial :: Text -> Text
-escapeSpecial = escapeStringUsing $
-  [ ('\t',"\\tab ")
-  , ('\8216',"\\u8216'")
-  , ('\8217',"\\u8217'")
-  , ('\8220',"\\u8220\"")
-  , ('\8221',"\\u8221\"")
-  , ('\8211',"\\u8211-")
-  , ('\8212',"\\u8212-")
-  ] <> backslashEscapes "{\\}"
+escapeSpecial t
+  | T.all isAlphaNum t = t
+  | otherwise          = T.concatMap escChar t
+ where
+  escChar '\t' = "\\tab "
+  escChar '\8216' = "\\u8216'"
+  escChar '\8217' = "\\u8217'"
+  escChar '\8220' = "\\u8220\""
+  escChar '\8221' = "\\u8221\""
+  escChar '\8211' = "\\u8211-"
+  escChar '\8212' = "\\u8212-"
+  escChar '{'     = "\\{"
+  escChar '}'     = "\\}"
+  escChar '\\'    = "\\\\"
+  escChar c       = T.singleton c
 
 -- | Escape strings as needed for rich text format.
 stringToRTF :: Text -> Text
@@ -241,12 +247,12 @@ blockToRTF _ _ b@(RawBlock f str)
   | otherwise         = do
       report $ BlockNotRendered b
       return ""
-blockToRTF indent alignment (BulletList lst) = (spaceAtEnd . T.concat) <$>
+blockToRTF indent alignment (BulletList lst) = spaceAtEnd . T.concat <$>
   mapM (listItemToRTF alignment indent (bulletMarker indent)) lst
 blockToRTF indent alignment (OrderedList attribs lst) =
-  (spaceAtEnd . T.concat) <$>
+  spaceAtEnd . T.concat <$>
    zipWithM (listItemToRTF alignment indent) (orderedMarkers indent attribs) lst
-blockToRTF indent alignment (DefinitionList lst) = (spaceAtEnd . T.concat) <$>
+blockToRTF indent alignment (DefinitionList lst) = spaceAtEnd . T.concat <$>
   mapM (definitionListItemToRTF alignment indent) lst
 blockToRTF indent _ HorizontalRule = return $
   rtfPar indent 0 AlignCenter "\\emdash\\emdash\\emdash\\emdash\\emdash"

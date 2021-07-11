@@ -1,8 +1,9 @@
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ViewPatterns      #-}
 {- |
    Module      : Text.Pandoc.Writers.Man
-   Copyright   : Copyright (C) 2007-2020 John MacFarlane
+   Copyright   : Copyright (C) 2007-2021 John MacFarlane
    License     : GNU GPL, version 2 or above
 
    Maintainer  : John MacFarlane <jgm@berkeley.edu>
@@ -15,6 +16,7 @@ Conversion of 'Pandoc' documents to roff man page format.
 module Text.Pandoc.Writers.Man ( writeMan ) where
 import Control.Monad.State.Strict
 import Data.List (intersperse)
+import Data.List.NonEmpty (nonEmpty)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -174,8 +176,7 @@ blockToMan opts (BulletList items) = do
   return (vcat contents)
 blockToMan opts (OrderedList attribs items) = do
   let markers = take (length items) $ orderedListMarkers attribs
-  let indent = 1 +
-                     maximum (map T.length markers)
+  let indent = 1 + maybe 0 maximum (nonEmpty (map T.length markers))
   contents <- mapM (\(num, item) -> orderedListItemToMan opts num indent item) $
               zip markers items
   return (vcat contents)
@@ -232,8 +233,7 @@ definitionListItemToMan opts (label, defs) = do
   labelText <- inlineListToMan opts $ makeCodeBold label
   contents <- if null defs
                  then return empty
-                 else liftM vcat $ forM defs $ \blocks ->
-                        case blocks of
+                 else liftM vcat $ forM defs $ \case
                           (x:xs) -> do
                             first' <- blockToMan opts $
                                       case x of

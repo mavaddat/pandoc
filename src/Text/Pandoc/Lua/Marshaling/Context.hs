@@ -1,8 +1,8 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {- |
    Module      : Text.Pandoc.Lua.Marshaling.Context
-   Copyright   : © 2012-2020 John MacFarlane
-                 © 2017-2020 Albert Krewinkel
+   Copyright   : © 2012-2021 John MacFarlane
+                 © 2017-2021 Albert Krewinkel
    License     : GNU GPL, version 2 or above
 
    Maintainer  : Albert Krewinkel <tarleb+pandoc@moltkeplatz.de>
@@ -22,6 +22,7 @@ instance (TemplateTarget a, Pushable a) => Pushable (Context a) where
 
 instance (TemplateTarget a, Pushable a) => Pushable (Val a) where
   push NullVal = Lua.push ()
+  push (BoolVal b) = Lua.push b
   push (MapVal ctx) = Lua.push ctx
   push (ListVal xs) = Lua.push xs
   push (SimpleVal d) = Lua.push $ render Nothing d
