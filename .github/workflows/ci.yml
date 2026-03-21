@@ -67,6 +67,9 @@ jobs:
     - name: Install numa
       run: sudo apt-get install libnuma-dev
 
+    - name: Install alex, happy
+      run: sudo apt-get install alex happy
+
     - name: Workaround runner image issue
       # https://github.com/actions/runner-images/issues/7061
       run: sudo chown -R $USER /usr/local/.ghcup
@@ -114,6 +117,9 @@ jobs:
     # needed by memory
     - name: Install numa
       run: sudo apt-get install libnuma-dev
+
+    - name: Install alex, happy
+      run: sudo apt-get install alex happy
 
     # declare/restore cached things
     - name: Cache stack global package db
