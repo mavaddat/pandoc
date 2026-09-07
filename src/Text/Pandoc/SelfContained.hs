@@ -68,10 +68,12 @@ isSourceAttribute tagname (x,_) =
   x == "poster" ||
   x == "data-background-image"
 
-newtype ConvertState =
+data ConvertState =
   ConvertState
   { svgMap  :: M.Map T.Text (T.Text, [Attribute T.Text])
     -- map from hash to (id, svg attributes)
+  , fetchCache :: M.Map (MimeType, T.Text) GetDataResult
+    -- cache of fetched resources, keyed on mime type hint and url
   } deriving (Show)
 
 convertTags :: PandocMonad m =>
@@ -285,7 +287,7 @@ combineSvgAttrs svgAttrs imgAttrs =
                     _ -> []
 
 cssURLs :: PandocMonad m
-        => FilePath -> ByteString -> m ByteString
+        => FilePath -> ByteString -> StateT ConvertState m ByteString
 cssURLs d orig = do
   res <- runParserT (parseCSSUrls d) () "css" orig
   case res of
@@ -295,12 +297,14 @@ cssURLs d orig = do
        Right bs  -> return bs
 
 parseCSSUrls :: PandocMonad m
-             => FilePath -> ParsecT ByteString () m ByteString
+             => FilePath
+             -> ParsecT ByteString () (StateT ConvertState m) ByteString
 parseCSSUrls d = B.concat <$> P.many
   (pCSSWhite <|> pCSSComment <|> pCSSImport d <|> pCSSUrl d <|> pCSSOther)
 
 pCSSImport :: PandocMonad m
-           => FilePath -> ParsecT ByteString () m ByteString
+           => FilePath
+           -> ParsecT ByteString () (StateT ConvertState m) ByteString
 pCSSImport d = P.try $ do
   P.string "@import"
   P.spaces
@@ -328,7 +332,8 @@ pCSSOther =
   (B.singleton <$> P.char '/')
 
 pCSSUrl :: PandocMonad m
-        => FilePath -> ParsecT ByteString () m ByteString
+        => FilePath
+        -> ParsecT ByteString () (StateT ConvertState m) ByteString
 pCSSUrl d = P.try $ do
   res <- pUrl >>= handleCSSUrl d
   case res of
@@ -360,7 +365,7 @@ pUrl = P.try $ do
 
 handleCSSUrl :: PandocMonad m
              => FilePath -> (T.Text, ByteString)
-             -> ParsecT ByteString () m
+             -> ParsecT ByteString () (StateT ConvertState m)
                   (Either ByteString (MimeType, ByteString))
 handleCSSUrl d (url, fallback) =
   case escapeURIString (/='|') (T.unpack $ trim url) of
@@ -376,7 +381,7 @@ handleCSSUrl d (url, fallback) =
                       (mt, b) <- if "text/css" `T.isPrefixOf` mt'
                                     -- see #5725: in HTML5, content type
                                     -- isn't allowed on style type attribute
-                                    then ("text/css",) <$> cssURLs d raw
+                                    then ("text/css",) <$> lift (cssURLs d raw)
                                     else return (mt', raw)
                       return $ Right (mt, b)
                     CouldNotFetch _ -> return $ Left fallback
@@ -401,10 +406,18 @@ decompressGzip bs =
 
 getData :: PandocMonad m
         => MimeType -> T.Text
-        -> m GetDataResult
+        -> StateT ConvertState m GetDataResult
 getData mimetype src
   | "data:" `T.isPrefixOf` src = return $ AlreadyDataURI src -- already data: uri
-  | otherwise = catchError fetcher handler
+  | otherwise = do
+      cache <- gets fetchCache
+      case M.lookup (mimetype, src) cache of
+        Just res -> return res
+        Nothing -> do
+          res <- catchError fetcher handler
+          modify $ \st ->
+            st{ fetchCache = M.insert (mimetype, src) res (fetchCache st) }
+          return res
  where
    fetcher = do
       let ext = T.toLower $ T.pack $ takeExtension $ T.unpack src
@@ -453,6 +466,7 @@ getData mimetype src
 makeSelfContained :: PandocMonad m => T.Text -> m T.Text
 makeSelfContained inp = do
   let tags = parseTags inp
-  let convertState = ConvertState { svgMap = mempty }
+  let convertState = ConvertState { svgMap = mempty,
+                                    fetchCache = mempty }
   out' <- evalStateT (convertTags tags) convertState
   return $ renderTags' out'
