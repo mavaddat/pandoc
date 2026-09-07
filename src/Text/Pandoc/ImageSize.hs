@@ -139,7 +139,12 @@ imageType img = case B.take 4 img of
                      "RIFF"
                        | B.take 4 (B.drop 8 img) == "WEBP"
                                         -> return Webp
-                     _ | B.take 4 (B.drop 4 img) == "ftyp" -> return Avif
+                     _ | B.take 4 (B.drop 4 img) == "ftyp"
+                          -- require the AVIF brand, so that other
+                          -- ISO media (mp4, mov, heic...) is excluded:
+                          && (B.take 4 (B.drop 8 img) == "avif" ||
+                              B.take 4 (B.drop 8 img) == "avis")
+                                        -> return Avif
                      _ -> mzero
 
 findSvgTag :: ByteString -> Bool
@@ -596,8 +601,12 @@ parseTkhdBox = do
   version <- getWord8
   skip 3  -- flags
 
-  -- Skip to width/height based on version
-  let skipBytes = if version == 1 then 76 else 64
+  -- Skip to width/height based on version:
+  -- creation/modification times, track ID, reserved, duration
+  -- (20 bytes with 32-bit times, 32 bytes with 64-bit times),
+  -- then 8 reserved, layer, alternate_group, volume, reserved
+  -- (2 bytes each), and the 36-byte transformation matrix
+  let skipBytes = if version == 1 then 84 else 72
   skip skipBytes
 
   width <- getWord32be
