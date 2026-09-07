@@ -118,7 +118,7 @@ imageType img = case B.take 4 img of
                      "\x47\x49\x46\x38" -> return Gif
                      "\x49\x49\x2a\x00" -> return Tiff
                      "\x4D\x4D\x00\x2a" -> return Tiff
-                     "\xff\xd8\xff\xbd" -> return Jpeg  -- JPEG without application segment -- see p.32 in https://www.w3.org/Graphics/JPEG/itu-t81.pdf (and https://gist.github.com/leommoore/f9e57ba2aa4bf197ebc5?permalink_comment_id=3863054#gistcomment-3863054)
+                     "\xff\xd8\xff\xdb" -> return Jpeg  -- JPEG without application segment -- see p.32 in https://www.w3.org/Graphics/JPEG/itu-t81.pdf (and https://gist.github.com/leommoore/f9e57ba2aa4bf197ebc5?permalink_comment_id=3863054#gistcomment-3863054)
                      _ | B.take 3 img == "\xff\xd8\xff"
                           && (let byte4 = B.take 1 (B.drop 3 img)
                               in byte4 >= "\xe0" && byte4 <= "\xef")  -- JPEG with application segment
