@@ -175,6 +175,10 @@ tests =
                           <> "NOT ZLIB DATA\nendstream\n"
                           <> "<</MediaBox [0 0 300 400]>>")
             @?= Right (ImageSize 300 400 72 72)
+      , testCase "MediaBox after empty object stream" $
+          imageSize def ("%PDF-1.5\n<</Type /ObjStm>>\nstream\n"
+                          <> "endstream<</MediaBox [0 0 25 50]>>")
+            @?= Right (ImageSize 25 50 72 72)
       ]
     , testGroup "svg"
       [ testCase "width and height attributes" $

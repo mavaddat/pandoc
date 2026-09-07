@@ -341,9 +341,7 @@ pPdfSize =
       A.skipSpace
       A.string "/ObjStm"
       _ <- A.manyTill pLine (A.string "stream" *> pEol)
-      stream <- BL.pack <$> A.manyTill
-                        (AW.satisfy (const True))
-                        (pEol *> A.string "endstream" *> pEol)
+      stream <- pTakeUntil "endstream"
       case A.parseOnly pPdfSize <$> safeDecompress stream of
         Just (Right is) -> pure is
         _ -> pPdfSize)
@@ -356,17 +354,31 @@ pPdfSize =
    pEol = A.satisfy iseol *> A.skipMany (A.satisfy iseol)
    pLine = A.takeWhile (not . iseol) <* pEol
 
+-- | Consume input up to and including the first occurrence of the
+-- (non-empty) terminator, returning what precedes it.  Unlike
+-- @manyTill anyWord8@, this consumes chunks at a time.
+pTakeUntil :: ByteString -> A.Parser ByteString
+pTakeUntil terminator = B.concat . reverse <$> go []
+ where
+  go acc = do
+    chunk <- A.takeWhile (/= B.head terminator)
+    let acc' = chunk : acc
+    (A.string terminator *> pure acc')
+      <|> (do c <- A.take 1
+              go (c : acc'))
+
 -- | Decompress a zlib stream, returning Nothing on malformed input.
 -- ('Codec.Compression.Zlib.decompress' would instead throw an
 -- exception from pure code when the corrupt part of its lazy result
 -- is forced.)
-safeDecompress :: BL.ByteString -> Maybe ByteString
-safeDecompress = fmap B.concat .
+safeDecompress :: ByteString -> Maybe ByteString
+safeDecompress bs = fmap B.concat $
   Zlib.foldDecompressStreamWithInput
     (\chunk rest -> (chunk :) <$> rest)
     (const (Just []))
     (const Nothing)
     (Zlib.decompressST Zlib.zlibFormat Zlib.defaultDecompressParams)
+    (BL.fromStrict bs)
 
 -- | Extract JPEG size from the header, without decoding any image
 -- data.  Scans the marker segments preceding the entropy-coded data
