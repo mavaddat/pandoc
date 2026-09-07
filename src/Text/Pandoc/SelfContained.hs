@@ -188,11 +188,7 @@ convertTags (t@(TagOpen tagname as):ts)
                                     [(k,v) | (k,v) <- attrs', k /= "id"]
                       modify $ \st ->
                         st{ svgMap = M.insert hash (svgid, attrs'') (svgMap st) }
-                      let fixUrl x =
-                            case T.breakOn "url(#" x of
-                              (_,"") -> x
-                              (before, after) -> before <>
-                                  "url(#" <> svgid <> "_" <> T.drop 5 after
+                      let fixUrl = T.replace "url(#" ("url(#" <> svgid <> "_")
                       let addIdPrefix ("id", x) = ("id", svgid <> "_" <> x)
                           addIdPrefix (k, x)
                            | k == "xlink:href" || k == "href" =
