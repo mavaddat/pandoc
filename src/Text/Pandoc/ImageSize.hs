@@ -391,26 +391,34 @@ emfSize img =
   let
     parseheader = runGetOrFail $ do
       skip 0x18             -- 0x00
-      frameL <- getWord32le -- 0x18  measured in 1/100 of a millimetre
-      frameT <- getWord32le -- 0x1C
-      frameR <- getWord32le -- 0x20
-      frameB <- getWord32le -- 0x24
+      -- the frame bounds are signed, measured in 1/100 of a millimetre:
+      frameL <- getInt32le  -- 0x18
+      frameT <- getInt32le  -- 0x1C
+      frameR <- getInt32le  -- 0x20
+      frameB <- getInt32le  -- 0x24
       skip 0x20             -- 0x28
       deviceX <- getWord32le  -- 0x48 pixels of reference device
       deviceY <- getWord32le  -- 0x4C
       mmX <- getWord32le      -- 0x50 real mm of reference device (always 320*240?)
-      mmY <- getWord32le      -- 0x58
+      mmY <- getWord32le      -- 0x54
       -- end of header
+      -- guard against division by zero below; since the ImageSize
+      -- fields are lazy, the exception would escape runGetOrFail
+      when (mmX == 0 || mmY == 0) $
+        fail "EMF header has zero-size reference device"
+      -- compute with Integers to avoid Word32 overflow:
       let
-        w = (deviceX * (frameR - frameL)) `quot` (mmX * 100)
-        h = (deviceY * (frameB - frameT)) `quot` (mmY * 100)
-        dpiW = (deviceX * 254) `quot` (mmX * 10)
-        dpiH = (deviceY * 254) `quot` (mmY * 10)
+        w = (toInteger deviceX * (toInteger frameR - toInteger frameL))
+              `quot` (toInteger mmX * 100)
+        h = (toInteger deviceY * (toInteger frameB - toInteger frameT))
+              `quot` (toInteger mmY * 100)
+        dpiW = (toInteger deviceX * 254) `quot` (toInteger mmX * 10)
+        dpiH = (toInteger deviceY * 254) `quot` (toInteger mmY * 10)
       return $ ImageSize
-        { pxX = fromIntegral w
-        , pxY = fromIntegral h
-        , dpiX = fromIntegral dpiW
-        , dpiY = fromIntegral dpiH
+        { pxX = w
+        , pxY = h
+        , dpiX = dpiW
+        , dpiY = dpiH
         }
   in
     case parseheader . BL.fromStrict $ img of
