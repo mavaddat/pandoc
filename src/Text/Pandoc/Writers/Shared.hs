@@ -204,10 +204,11 @@ htmlAttrs :: HasChars a => Attr -> Doc a
 htmlAttrs (ident, classes, kvs) = addSpaceIfNotEmpty (hsep [
   if T.null ident
       then empty
-      else "id=" <> doubleQuotes (text $ T.unpack ident)
+      else "id=" <> doubleQuotes (text $ T.unpack (escapeStringForXML ident))
   ,if null classes
       then empty
-      else "class=" <> doubleQuotes (text $ T.unpack (T.unwords classes))
+      else "class=" <> doubleQuotes
+             (text $ T.unpack . escapeStringForXML $ T.unwords classes)
   ,hsep (map (\(k,v) -> formatKey k <> "=" <>
                 doubleQuotes (text $ T.unpack (escapeStringForXML v))) kvs)
   ])
