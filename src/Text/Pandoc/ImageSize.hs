@@ -161,7 +161,11 @@ findSvgTag img = case B.elemIndex '<' img of
 imageSize :: WriterOptions -> ByteString -> Either T.Text ImageSize
 imageSize opts img = checkDpi <$>
   case imageType img of
-       Just Png  -> getSize img
+       Just Png  -> case pngSize img of
+                      Just sz -> Right sz
+                      -- fall back to the full decoder if the header
+                      -- scan fails:
+                      Nothing -> getSize img
        Just Gif  -> getSize img
        Just Jpeg -> case jpegSize img of
                       Just sz -> Right sz
@@ -387,6 +391,53 @@ safeDecompress bs = fmap B.concat $
     (const Nothing)
     (Zlib.decompressST Zlib.zlibFormat Zlib.defaultDecompressParams)
     (BL.fromStrict bs)
+
+-- | Extract PNG size from the IHDR and pHYs chunks, without
+-- decoding any image data.  (For paletted PNGs, JuicyPixels decodes
+-- the whole image before returning metadata.)
+pngSize :: ByteString -> Maybe ImageSize
+pngSize img =
+  case runGetOrFail pPngSize (BL.fromStrict img) of
+    Left _ -> Nothing
+    Right (_, _, sz) -> Just sz
+ where
+  pPngSize = do
+    skip 8  -- signature
+    -- the IHDR chunk always comes first:
+    ihdrLen <- getWord32be
+    ihdr <- getByteString 4
+    when (ihdr /= "IHDR" || ihdrLen < 13) $ fail "IHDR chunk not found"
+    w <- getWord32be
+    h <- getWord32be
+    skip (fromIntegral ihdrLen - 8 + 4)  -- rest of chunk and CRC
+    (dx, dy) <- findPhys
+    return ImageSize{ pxX = toInteger w, pxY = toInteger h
+                    , dpiX = dx, dpiY = dy }
+  -- scan the following chunks for pHYs:
+  findPhys = do
+    done <- isEmpty
+    if done
+       then return (72, 72)
+       else do
+         len <- getWord32be
+         typ <- getByteString 4
+         case typ of
+           "pHYs" -> do
+             ppuX <- getWord32be
+             ppuY <- getWord32be
+             unit <- getWord8
+             return $ if unit == 1  -- pixels per meter
+                         then (dpmToDpi (toInteger ppuX),
+                               dpmToDpi (toInteger ppuY))
+                         else (72, 72)
+           "IDAT" -> return (72, 72)  -- pHYs must precede image data
+           "IEND" -> return (72, 72)
+           _ -> skip (fromIntegral len + 4) *> findPhys
+
+-- | Convert dots per meter to dots per inch, using the same integer
+-- arithmetic as JuicyPixels for consistency.
+dpmToDpi :: Integer -> Integer
+dpmToDpi z = z * 254 `div` 10000
 
 -- | Extract JPEG size from the header, without decoding any image
 -- data.  Scans the marker segments preceding the entropy-coded data

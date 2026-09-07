@@ -52,6 +52,23 @@ jpegBare, jpegApp0 :: B.ByteString
 jpegBare = B.pack [0xff, 0xd8, 0xff, 0xdb] <> "rest"
 jpegApp0 = B.pack [0xff, 0xd8, 0xff, 0xe0] <> "rest"
 
+-- | A PNG chunk with the given type and body (and a dummy CRC).
+pngChunk :: B.ByteString -> B.ByteString -> B.ByteString
+pngChunk name body = be32 (B.length body) <> name <> body <> B.replicate 4 0
+
+-- | A PNG header with the given extra chunks after IHDR (and no
+-- image data).
+pngFile :: [B.ByteString] -> Int -> Int -> B.ByteString
+pngFile chunks w h = B.concat $
+  [ "\x89PNG\r\n\x1a\n"
+  , pngChunk "IHDR" (be32 w <> be32 h <> B.pack [8, 3, 0, 0, 0]) ]
+  <> chunks
+
+-- | A pHYs chunk with the given unit (1 = pixels per meter) and
+-- pixel densities.
+physChunk :: Word8 -> Int -> Int -> B.ByteString
+physChunk unit x y = pngChunk "pHYs" (be32 x <> be32 y <> B.pack [unit])
+
 -- | A JPEG marker segment with the given marker and body.
 jpegSeg :: Word8 -> B.ByteString -> B.ByteString
 jpegSeg m body = B.pack [0xff, m] <> be16 (B.length body + 2) <> body
@@ -226,6 +243,22 @@ tests =
           imageSize def avifIspe @?= Right (ImageSize 640 480 72 72)
       , testCase "tkhd box" $
           imageSize def avisTkhd @?= Right (ImageSize 640 480 72 72)
+      ]
+    , testGroup "png"  -- headers without image data, so these only
+                       -- succeed if no decoding is attempted
+      [ testCase "no pHYs chunk" $
+          imageSize def (pngFile [] 640 480)
+            @?= Right (ImageSize 640 480 72 72)
+      , testCase "pHYs in pixels per meter" $
+          imageSize def (pngFile [physChunk 1 3937 3937] 640 480)
+            @?= Right (ImageSize 640 480 99 99)
+      , testCase "pHYs with unknown unit" $
+          imageSize def (pngFile [physChunk 0 4 3] 640 480)
+            @?= Right (ImageSize 640 480 72 72)
+      , testCase "pHYs after another chunk" $
+          imageSize def (pngFile [ pngChunk "tEXt" "k\0v"
+                                 , physChunk 1 3937 3937 ] 640 480)
+            @?= Right (ImageSize 640 480 99 99)
       ]
     , testGroup "jpeg"  -- headers without image data, so these only
                         -- succeed if no decoding is attempted
