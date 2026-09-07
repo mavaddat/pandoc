@@ -316,6 +316,9 @@ tests =
       , testCase "no app segments" $
           imageSize def (jpegFile [jpegSeg 0xdb (B.replicate 65 0)] 640 480)
             @?= Right (ImageSize 640 480 72 72)
+      , testCase "defective zero density defaults to 72 (#6880)" $
+          imageSize def (jpegFile [jfifSeg 1 0 0] 640 480)
+            @?= Right (ImageSize 640 480 72 72)
       ]
     , testGroup "fixtures"
       [ testCase "lalune.jpg" $ do

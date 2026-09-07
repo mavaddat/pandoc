@@ -39,7 +39,7 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Binary.Get
 import Data.Bits ((.&.), shiftR, shiftL)
 import Data.Word (Word32)
-import Data.Maybe (isJust, fromJust, fromMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Char (isDigit)
 import Control.Monad
 import Text.Pandoc.Shared (safeRead)
@@ -183,10 +183,10 @@ imageSize opts img = checkDpi <$>
   where mbToEither msg Nothing  = Left msg
         mbToEither _   (Just x) = Right x
         -- see #6880, some defective JPEGs may encode dpi 0, so default to 72
-        -- if that value is 0
+        -- if that value is 0 or negative
         checkDpi size =
-          size{ dpiX = if dpiX size == 0 then 72 else dpiX size
-              , dpiY = if dpiY size == 0 then 72 else dpiY size }
+          size{ dpiX = if dpiX size <= 0 then 72 else dpiX size
+              , dpiY = if dpiY size <= 0 then 72 else dpiY size }
 
 
 sizeInPixels :: ImageSize -> (Integer, Integer)
@@ -664,10 +664,9 @@ pWebpSize = do
       AW.word8 0x2a
       width16 <- AW.take 2
       height16 <- AW.take 2
-      let w = toInteger <$> decode lossySize width16
-          h = toInteger <$> decode lossySize height16
-      guard $ isJust w && isJust h
-      return (fromJust w, fromJust h)
+      case (decode lossySize width16, decode lossySize height16) of
+        (Just w, Just h) -> return (toInteger w, toInteger h)
+        _ -> empty
     -- The VP8L bitstream is read starting from the least significant
     -- bit of each byte, so after reading the 4 bytes as a little-endian
     -- word, width - 1 is in bits 0-13 and height - 1 in bits 14-27.
@@ -678,12 +677,10 @@ pWebpSize = do
       AW.take 4 -- length in bytes of VP8 Lossless chunk size
       AW.word8 0x2f  -- webp lossless stream magic
       sizes <- AW.take 4
-      let mbword = decode losslessSizes sizes
-      guard $ isJust mbword
-      let word = fromJust mbword
-      let w = toInteger $ losslessSize word
-          h = toInteger $ losslessSize (word `shiftR` 14)
-      return (w, h)
+      case decode losslessSizes sizes of
+        Just word -> return ( toInteger $ losslessSize word
+                            , toInteger $ losslessSize (word `shiftR` 14) )
+        Nothing -> empty
     extendedSize = runGetOrFail $ do
       low <- toInteger <$> getWord16le
       high <- toInteger <$> getWord8
@@ -693,10 +690,9 @@ pWebpSize = do
       AW.take 8  -- VP8X chunk length, flags and reserved area
       width24 <- AW.take 3
       height24 <- AW.take 3
-      let w = decode extendedSize width24
-          h = decode extendedSize height24
-      guard $ isJust w && isJust h
-      return (fromJust w, fromJust h)
+      case (decode extendedSize width24, decode extendedSize height24) of
+        (Just w, Just h) -> return (w, h)
+        _ -> empty
 
 webpSize :: WriterOptions -> ByteString -> Maybe ImageSize
 webpSize opts img =
