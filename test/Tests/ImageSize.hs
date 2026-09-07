@@ -14,6 +14,7 @@ module Tests.ImageSize (tests) where
 
 import Data.Bits (shiftR)
 import qualified Data.ByteString as B
+import Data.Word (Word8)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Pandoc.ImageSize
@@ -24,6 +25,9 @@ import Text.Pandoc.Options (def)
 le32, be32 :: Int -> B.ByteString
 le32 n = B.pack $ map (fromIntegral . (n `shiftR`) . (8 *)) [0,1,2,3]
 be32 n = B.pack $ map (fromIntegral . (n `shiftR`) . (8 *)) [3,2,1,0]
+
+be16 :: Int -> B.ByteString
+be16 n = B.pack $ map (fromIntegral . (n `shiftR`) . (8 *)) [1,0]
 
 -- | An ISO BMFF box with the given type and contents.
 box :: B.ByteString -> B.ByteString -> B.ByteString
@@ -47,6 +51,35 @@ svgFile attrs =
 jpegBare, jpegApp0 :: B.ByteString
 jpegBare = B.pack [0xff, 0xd8, 0xff, 0xdb] <> "rest"
 jpegApp0 = B.pack [0xff, 0xd8, 0xff, 0xe0] <> "rest"
+
+-- | A JPEG marker segment with the given marker and body.
+jpegSeg :: Word8 -> B.ByteString -> B.ByteString
+jpegSeg m body = B.pack [0xff, m] <> be16 (B.length body + 2) <> body
+
+-- | A JPEG header: SOI marker, the given segments, and a baseline
+-- SOF segment with the given width and height (and no image data).
+jpegFile :: [B.ByteString] -> Int -> Int -> B.ByteString
+jpegFile segs w h = B.concat $ [B.pack [0xff, 0xd8]] <> segs <>
+  [jpegSeg 0xc0 (B.pack [8] <> be16 h <> be16 w <> B.pack [3])]
+
+-- | A JFIF APP0 segment with the given density units (0 = aspect
+-- ratio only, 1 = dots per inch, 2 = dots per cm) and densities.
+jfifSeg :: Word8 -> Int -> Int -> B.ByteString
+jfifSeg units x y = jpegSeg 0xe0 $
+  "JFIF\0" <> B.pack [1, 2, units] <> be16 x <> be16 y <> "\0\0"
+
+-- | An Exif APP1 segment giving 300x200 dpi resolution.
+exifSeg :: B.ByteString
+exifSeg = jpegSeg 0xe1 $ "Exif\0\0"
+  <> "MM" <> be16 42 <> be32 8           -- TIFF header (big-endian)
+  <> be16 3                              -- IFD entry count
+  <> entry 0x011a 5 (be32 50)            -- XResolution at offset 50
+  <> entry 0x011b 5 (be32 58)            -- YResolution at offset 58
+  <> entry 0x0128 3 (be16 2 <> be16 0)   -- ResolutionUnit: inches
+  <> be32 0                              -- next IFD offset
+  <> be32 300 <> be32 1                  -- XResolution = 300/1
+  <> be32 200 <> be32 1                  -- YResolution = 200/1
+  where entry tag typ val = be16 tag <> be16 typ <> be32 1 <> val
 
 -- an AVIF image with an ispe (image spatial extents) box:
 avifIspe :: B.ByteString
@@ -184,6 +217,27 @@ tests =
           imageSize def avifIspe @?= Right (ImageSize 640 480 72 72)
       , testCase "tkhd box" $
           imageSize def avisTkhd @?= Right (ImageSize 640 480 72 72)
+      ]
+    , testGroup "jpeg"  -- headers without image data, so these only
+                        -- succeed if no decoding is attempted
+      [ testCase "jfif dpi" $
+          imageSize def (jpegFile [jfifSeg 1 96 96] 640 480)
+            @?= Right (ImageSize 640 480 96 96)
+      , testCase "jfif density in dots per cm" $
+          imageSize def (jpegFile [jfifSeg 2 100 100] 640 480)
+            @?= Right (ImageSize 640 480 254 254)
+      , testCase "jfif aspect ratio only" $
+          imageSize def (jpegFile [jfifSeg 0 1 1] 640 480)
+            @?= Right (ImageSize 640 480 72 72)
+      , testCase "exif resolution" $
+          imageSize def (jpegFile [exifSeg] 640 480)
+            @?= Right (ImageSize 640 480 300 200)
+      , testCase "exif overrides jfif" $
+          imageSize def (jpegFile [jfifSeg 1 96 96, exifSeg] 640 480)
+            @?= Right (ImageSize 640 480 300 200)
+      , testCase "no app segments" $
+          imageSize def (jpegFile [jpegSeg 0xdb (B.replicate 65 0)] 640 480)
+            @?= Right (ImageSize 640 480 72 72)
       ]
     , testGroup "fixtures"
       [ testCase "lalune.jpg" $ do

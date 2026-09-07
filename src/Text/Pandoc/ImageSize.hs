@@ -39,7 +39,7 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Binary.Get
 import Data.Bits ((.&.), shiftR, shiftL)
 import Data.Word (Word32)
-import Data.Maybe (isJust, fromJust)
+import Data.Maybe (isJust, fromJust, fromMaybe)
 import Data.Char (isDigit)
 import Control.Monad
 import Text.Pandoc.Shared (safeRead)
@@ -155,7 +155,11 @@ imageSize opts img = checkDpi <$>
   case imageType img of
        Just Png  -> getSize img
        Just Gif  -> getSize img
-       Just Jpeg -> getSize img
+       Just Jpeg -> case jpegSize img of
+                      Just sz -> Right sz
+                      -- fall back to the full decoder if the header
+                      -- scan fails:
+                      Nothing -> getSize img
        Just Tiff -> getSize img
        Just Svg  -> mbToEither "could not determine SVG size" $ svgSize opts img
        Just Eps  -> mbToEither "could not determine EPS size" $ epsSize img
@@ -363,6 +367,119 @@ safeDecompress = fmap B.concat .
     (const (Just []))
     (const Nothing)
     (Zlib.decompressST Zlib.zlibFormat Zlib.defaultDecompressParams)
+
+-- | Extract JPEG size from the header, without decoding any image
+-- data.  Scans the marker segments preceding the entropy-coded data
+-- for a start-of-frame marker (which gives the dimensions in pixels)
+-- and JFIF APP0 and Exif APP1 segments (which give the resolution).
+jpegSize :: ByteString -> Maybe ImageSize
+jpegSize img =
+  case runGetOrFail (skip 2 *> scanSegments Nothing Nothing)
+         (BL.fromStrict img) of
+    Left _ -> Nothing
+    Right (_, _, sz) -> Just sz
+ where
+  scanSegments jfifDpi exifDpi = do
+    ff <- getWord8
+    when (ff /= 0xff) $ fail "malformed JPEG segment"
+    marker <- skipFill
+    scanSegment marker jfifDpi exifDpi
+
+  -- extra 0xff bytes before a marker are padding:
+  skipFill = do
+    b <- getWord8
+    if b == 0xff then skipFill else return b
+
+  scanSegment marker jfifDpi exifDpi
+    -- start of frame (baseline, progressive, etc.); C4, C8, and CC
+    -- in this range are entropy-coding markers, not SOF:
+    | marker >= 0xc0 && marker <= 0xcf
+      && marker `notElem` [0xc4, 0xc8, 0xcc] = do
+        skip 3  -- segment length and sample precision
+        h <- getWord16be
+        w <- getWord16be
+        -- as in JuicyPixels, Exif resolution overrides JFIF:
+        let (dx, dy) = fromMaybe (fromMaybe (72, 72) jfifDpi) exifDpi
+        return ImageSize{ pxX = toInteger w, pxY = toInteger h
+                        , dpiX = dx, dpiY = dy }
+    | marker == 0xd9 || marker == 0xda =
+        fail "no SOF marker before image data"  -- EOI or SOS
+    | (marker >= 0xd0 && marker <= 0xd7) || marker == 0x01 =
+        scanSegments jfifDpi exifDpi  -- markers without a payload
+    | otherwise = do
+        len <- getWord16be
+        when (len < 2) $ fail "invalid segment length"
+        let n = fromIntegral len - 2
+        case marker of
+          0xe0 -> do  -- APP0 (JFIF)
+            body <- getByteString n
+            scanSegments (jfifDensity body <|> jfifDpi) exifDpi
+          0xe1 -> do  -- APP1 (Exif)
+            body <- getByteString n
+            scanSegments jfifDpi (exifDensity body <|> exifDpi)
+          _ -> skip n *> scanSegments jfifDpi exifDpi
+
+-- | Pixel density from the body of a JFIF APP0 segment.
+jfifDensity :: ByteString -> Maybe (Integer, Integer)
+jfifDensity body = do
+  guard $ "JFIF\0" `B.isPrefixOf` body
+  -- after the identifier and 2-byte version: density units,
+  -- horizontal density, vertical density
+  (units, x, y) <- getAt 7 ((,,) <$> getWord8 <*> getWord16be <*> getWord16be)
+                     body
+  case units of
+    1 -> Just (toInteger x, toInteger y)  -- dots per inch
+    2 -> Just (dpcmToDpi (toInteger x), dpcmToDpi (toInteger y))  -- per cm
+    _ -> Nothing
+
+-- | Resolution from the TIFF structure in the body of an Exif APP1
+-- segment.
+exifDensity :: ByteString -> Maybe (Integer, Integer)
+exifDensity body = do
+  guard $ "Exif\0\0" `B.isPrefixOf` body
+  let tiff = B.drop 6 body  -- offsets are relative to the TIFF header
+  (w16, w32) <- case B.take 2 tiff of
+    "II" -> Just (getWord16le, getWord32le)
+    "MM" -> Just (getWord16be, getWord32be)
+    _    -> Nothing
+  ifd <- fromIntegral <$> getAt 4 w32 tiff
+  n <- fromIntegral <$> getAt ifd w16 tiff
+  entries <- mapM (\i -> do let off = ifd + 2 + 12 * i
+                            tag <- getAt off w16 tiff
+                            return (tag, off))
+                  [0 .. n - 1 :: Int]
+  -- resolution unit (SHORT, stored inline in the value field):
+  -- 2 = inches, 3 = centimeters
+  unit <- lookup 0x0128 entries >>= \off -> getAt (off + 8) w16 tiff
+  toDpi <- case unit of
+             2 -> Just id
+             3 -> Just dpcmToDpi
+             _ -> Nothing
+  let resolution tag = do
+        off <- lookup tag entries
+        -- the value field holds the offset of the RATIONAL value:
+        valOff <- fromIntegral <$> getAt (off + 8) w32 tiff
+        num <- getAt valOff w32 tiff
+        den <- getAt (valOff + 4) w32 tiff
+        guard $ den /= 0
+        return $ toDpi (toInteger num `div` toInteger den)
+  x <- resolution 0x011a  -- XResolution
+  y <- resolution 0x011b  -- YResolution
+  return (x, y)
+
+-- | Convert dots per centimeter to dots per inch, using the same
+-- integer arithmetic as JuicyPixels for consistency.
+dpcmToDpi :: Integer -> Integer
+dpcmToDpi z = z * 254 `div` 100
+
+-- | Run a 'Get' parser at the given offset in a strict ByteString,
+-- returning Nothing if it fails (e.g. by running out of input).
+getAt :: Int -> Get a -> ByteString -> Maybe a
+getAt off g bs
+  | off < 0 = Nothing
+  | otherwise = case runGetOrFail (skip off *> g) (BL.fromStrict bs) of
+      Left _ -> Nothing
+      Right (_, _, x) -> Just x
 
 getSize :: ByteString -> Either T.Text ImageSize
 getSize img =
