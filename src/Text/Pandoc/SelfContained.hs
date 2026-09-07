@@ -23,7 +23,7 @@ import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as L
 import qualified Data.Text as T
-import Data.Char (isAlphaNum, isAscii)
+import Data.Char (isAlphaNum, isAscii, toLower)
 import Crypto.Hash (hashWith, SHA1(SHA1))
 import Network.URI (escapeURIString)
 import System.FilePath (takeDirectory, takeExtension, (</>))
@@ -102,7 +102,7 @@ convertTags (t@(TagOpen "script" as):tc@(TagClose "script"):ts) =
                   | ("text/javascript" `T.isPrefixOf` mime ||
                      "application/javascript" `T.isPrefixOf` mime ||
                      "application/x-javascript" `T.isPrefixOf` mime) &&
-                     not ("</script" `B.isInfixOf` bs) ->
+                     not ("</script" `B.isInfixOf` B.map toLower bs) ->
                      return $
                        TagOpen "script" [(k,v) | (k,v) <- as
                                                , k == "type" ||
