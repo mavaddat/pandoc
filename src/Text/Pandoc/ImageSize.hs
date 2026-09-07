@@ -63,7 +63,7 @@ import qualified Codec.Compression.Zlib.Internal as Zlib
 -- quick and dirty functions to get image sizes
 
 data ImageType = Png | Gif | Jpeg | Svg | Pdf | Eps | Emf | Tiff | Webp | Avif
-                 deriving Show
+                 deriving (Show, Eq)
 data Direction = Width | Height
 instance Show Direction where
   show Width  = "width"

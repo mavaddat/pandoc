@@ -868,6 +868,7 @@ test-suite test-pandoc
                   Tests.Shared
                   Tests.MediaBag
                   Tests.XML
+                  Tests.ImageSize
                   Tests.Readers.LaTeX
                   Tests.Readers.HTML
                   Tests.Readers.JATS
