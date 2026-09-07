@@ -257,11 +257,12 @@ showInPixel :: WriterOptions -> Dimension -> T.Text
 showInPixel _ (Percent _) = ""
 showInPixel opts dim = T.pack $ show $ inPixel opts dim
 
--- | Maybe split a string into a leading number and trailing unit, e.g. "3cm" to Just (3.0, "cm")
+-- | Maybe split a string into a leading number and trailing unit, e.g. "3cm" to Just (3.0, "cm").
+-- Whitespace between the number and the unit is ignored.
 numUnit :: T.Text -> Maybe (Double, T.Text)
 numUnit s =
   let (nums, unit) = T.span (\c -> isDigit c || ('.'==c)) s
-  in (\n -> (n, unit)) <$> safeRead nums
+  in (\n -> (n, T.stripStart unit)) <$> safeRead nums
 
 -- | Scale a dimension by a factor.
 scaleDimension :: Double -> Dimension -> Dimension

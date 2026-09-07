@@ -168,6 +168,15 @@ tests =
         imageType (box "ftyp" ("isom" <> B.replicate 4 0)) @?= Nothing
     , testCase "garbage" $ imageType "garbage!" @?= Nothing
     ]
+  , testGroup "numUnit"
+    [ testCase "number and unit" $ numUnit "3cm" @?= Just (3.0, "cm")
+    , testCase "space between number and unit" $
+        numUnit "3 cm" @?= Just (3.0, "cm")
+    , testCase "bare number" $ numUnit "3.5" @?= Just (3.5, "")
+    , testCase "no number" $ numUnit "cm" @?= Nothing
+    , testCase "lengthToDim with space" $
+        lengthToDim "3 cm" @?= Just (Centimeter 3)
+    ]
   , testGroup "imageSize"
     [ testGroup "eps"
       [ testCase "zero origin" $
