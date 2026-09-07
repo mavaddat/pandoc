@@ -33,6 +33,17 @@ be16 n = B.pack $ map (fromIntegral . (n `shiftR`) . (8 *)) [1,0]
 box :: B.ByteString -> B.ByteString -> B.ByteString
 box name body = be32 (8 + B.length body) <> name <> body
 
+be64 :: Int -> B.ByteString
+be64 n = B.pack $ map (fromIntegral . (n `shiftR`) . (8 *)) [7,6..0]
+
+-- | An ISO BMFF box using the 64-bit "largesize" field (size == 1).
+largeBox :: B.ByteString -> B.ByteString -> B.ByteString
+largeBox name body = be32 1 <> name <> be64 (16 + B.length body) <> body
+
+-- | An ISO BMFF box with size == 0 (extends to the end of the file).
+zeroBox :: B.ByteString -> B.ByteString -> B.ByteString
+zeroBox name body = be32 0 <> name <> body
+
 -- | An EMF header with the given frame bounds (1/100 mm), reference
 -- device size in pixels, and reference device size in mm.
 emfFile :: [Int] -> [Int] -> [Int] -> B.ByteString
@@ -98,12 +109,16 @@ exifSeg = jpegSeg 0xe1 $ "Exif\0\0"
   <> be32 200 <> be32 1                  -- YResolution = 200/1
   where entry tag typ val = be16 tag <> be16 typ <> be32 1 <> val
 
+-- the contents of a meta box locating an ispe (image spatial
+-- extents) box giving dimensions 640x480:
+avifMeta :: B.ByteString
+avifMeta = B.replicate 4 0 <>  -- version/flags
+             box "iprp" (box "ipco"
+               (box "ispe" (B.replicate 4 0 <> be32 640 <> be32 480)))
+
 -- an AVIF image with an ispe (image spatial extents) box:
 avifIspe :: B.ByteString
-avifIspe = box "ftyp" ("avif" <> B.replicate 4 0)
-        <> box "meta" (B.replicate 4 0 <>  -- version/flags
-             box "iprp" (box "ipco"
-               (box "ispe" (B.replicate 4 0 <> be32 640 <> be32 480))))
+avifIspe = box "ftyp" ("avif" <> B.replicate 4 0) <> box "meta" avifMeta
 
 -- an (animated) AVIF image with dimensions only in a tkhd box:
 avisTkhd :: B.ByteString
@@ -252,6 +267,18 @@ tests =
           imageSize def avifIspe @?= Right (ImageSize 640 480 96 96)
       , testCase "tkhd box" $
           imageSize def avisTkhd @?= Right (ImageSize 640 480 96 96)
+      , testCase "meta box with 64-bit largesize" $
+          imageSize def (box "ftyp" ("avif" <> B.replicate 4 0)
+                          <> largeBox "meta" avifMeta)
+            @?= Right (ImageSize 640 480 96 96)
+      , testCase "meta box with size 0 (extends to end of file)" $
+          imageSize def (box "ftyp" ("avif" <> B.replicate 4 0)
+                          <> zeroBox "meta" avifMeta)
+            @?= Right (ImageSize 640 480 96 96)
+      , testCase "unknown box before meta box" $
+          imageSize def (box "ftyp" ("avif" <> B.replicate 4 0)
+                          <> box "free" "junk" <> box "meta" avifMeta)
+            @?= Right (ImageSize 640 480 96 96)
       ]
     , testGroup "png"  -- headers without image data, so these only
                        -- succeed if no decoding is attempted

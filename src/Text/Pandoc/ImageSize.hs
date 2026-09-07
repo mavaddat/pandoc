@@ -716,21 +716,38 @@ avifSize opts img =
 
 ---- AVIF parsing:
 
+-- | Read an ISO BMFF box header, returning the box type, the size of
+-- the box contents, and the size of the header itself.  Handles the
+-- 64-bit "largesize" field (size == 1) and boxes that extend to the
+-- end of the file (size == 0).
+getBoxHeader :: Get (B.ByteString, Int, Int)
+getBoxHeader = do
+  boxSize <- getWord32be
+  boxType <- getByteString 4
+  case boxSize of
+    0 -> do  -- the box extends to the end of the file
+      rest <- lookAhead getRemainingLazyByteString
+      return (boxType, fromIntegral (BL.length rest), 8)
+    1 -> do  -- a 64-bit size follows the box type
+      largeSize <- getWord64be
+      when (largeSize < 16 || largeSize > 0x7fffffff) $
+        fail "invalid box largesize"
+      return (boxType, fromIntegral largeSize - 16, 16)
+    _ -> do
+      when (boxSize < 8) $ fail "invalid box size"
+      return (boxType, fromIntegral boxSize - 8, 8)
+
 verifyFtyp :: Get ()
 verifyFtyp = do
-  ftypSize <- getWord32be
-  when (ftypSize < 16) $ fail "Invalid ftyp size"
-
-  ftyp <- getByteString 4
-  unless (ftyp == "ftyp") $ fail "ftyp signature not found"
+  (boxType, contentSize, _) <- getBoxHeader
+  unless (boxType == "ftyp") $ fail "ftyp signature not found"
+  when (contentSize < 8) $ fail "Invalid ftyp size"
 
   brand <- getByteString 4
   unless (brand == "avif" || brand == "avis") $ fail "Not an AVIF file"
 
   -- Skip minor version and compatible brands
-  -- (we've read 12 bytes: size+type+brand)
-  let remaining_ftyp = fromIntegral ftypSize - 12
-  when (remaining_ftyp > 0) $ skip remaining_ftyp
+  skip (contentSize - 4)
 
 findAvifDimensions :: Get (Word32, Word32)
 findAvifDimensions = searchAvifBoxes []
@@ -741,10 +758,7 @@ searchAvifBoxes path = do
   if isempty
     then fail $ "No dimensions found. Searched: " ++ show (reverse path)
     else do
-      boxSize <- getWord32be
-      boxType <- getByteString 4
-
-      let contentSize = fromIntegral boxSize - 8
+      (boxType, contentSize, _) <- getBoxHeader
       let newPath = boxType : path
 
       -- If it's a container box, search inside it
@@ -755,10 +769,8 @@ searchAvifBoxes path = do
           result <- tryParseDimensions boxType contentSize
           case result of
             Just dims -> return dims
-            Nothing -> do
-              -- Skip this box and continue
-              when (contentSize > 0 && contentSize < 10000000) $
-                skip contentSize
+            Nothing ->
+              -- Don't skip here - tryParseDimensions already handled it
               searchAvifBoxes path
 
 tryParseDimensions :: B.ByteString -> Int -> Get (Maybe (Word32, Word32))
@@ -855,13 +867,11 @@ searchAvifBoxesInRange :: Int -> [B.ByteString] -> Get (Word32, Word32)
 searchAvifBoxesInRange remaining' path
   | remaining' < 8 = searchAvifBoxes path
   | otherwise = do
-      boxSize <- getWord32be
-      boxType <- getByteString 4
+      (boxType, contentSize, headerSize) <- getBoxHeader
 
-      let contentSize = fromIntegral boxSize - 8
       let newPath = boxType : path
 
-      when (contentSize < 0 || fromIntegral boxSize > remaining') $ do
+      when (contentSize + headerSize > remaining') $
         fail $ "Malformed box at path: " ++ show (reverse newPath)
 
       if isContainerBox boxType
@@ -872,7 +882,8 @@ searchAvifBoxesInRange remaining' path
             Just dims -> return dims
             Nothing -> do
               -- Don't skip here - tryParseDimensions already handled it
-              searchAvifBoxesInRange (remaining' - fromIntegral boxSize) path
+              searchAvifBoxesInRange
+                (remaining' - contentSize - headerSize) path
 
 isContainerBox :: B.ByteString -> Bool
 isContainerBox boxType = boxType `elem`
