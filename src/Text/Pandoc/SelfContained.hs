@@ -68,10 +68,9 @@ isSourceAttribute tagname (x,_) =
   x == "poster" ||
   x == "data-background-image"
 
-data ConvertState =
+newtype ConvertState =
   ConvertState
-  { isHtml5 :: Bool
-  , svgMap  :: M.Map T.Text (T.Text, [Attribute T.Text])
+  { svgMap  :: M.Map T.Text (T.Text, [Attribute T.Text])
     -- map from hash to (id, svg attributes)
   } deriving (Show)
 
@@ -454,10 +453,6 @@ getData mimetype src
 makeSelfContained :: PandocMonad m => T.Text -> m T.Text
 makeSelfContained inp = do
   let tags = parseTags inp
-  let html5 = case tags of
-                  (TagOpen "!DOCTYPE" [("html","")]:_) -> True
-                  _ -> False
-  let convertState = ConvertState { isHtml5 = html5,
-                                    svgMap = mempty }
+  let convertState = ConvertState { svgMap = mempty }
   out' <- evalStateT (convertTags tags) convertState
   return $ renderTags' out'
