@@ -57,7 +57,7 @@ import qualified Data.Attoparsec.ByteString as AW
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Codec.Picture.Metadata as Metadata
 import Codec.Picture (decodeImageWithMetadata)
-import Codec.Compression.Zlib (decompress)
+import qualified Codec.Compression.Zlib.Internal as Zlib
 -- import Debug.Trace
 
 -- quick and dirty functions to get image sizes
@@ -333,10 +333,9 @@ pPdfSize =
       stream <- BL.pack <$> A.manyTill
                         (AW.satisfy (const True))
                         (pEol *> A.string "endstream" *> pEol)
-      let contents = BL.toStrict (decompress stream)
-      case A.parseOnly pPdfSize contents of
-        Left _ -> pPdfSize
-        Right is -> pure is)
+      case A.parseOnly pPdfSize <$> safeDecompress stream of
+        Just (Right is) -> pure is
+        _ -> pPdfSize)
   <|>
   (A.char '/' *> pPdfSize)
  where
@@ -345,6 +344,18 @@ pPdfSize =
    iseol _ = False
    pEol = A.satisfy iseol *> A.skipMany (A.satisfy iseol)
    pLine = A.takeWhile (not . iseol) <* pEol
+
+-- | Decompress a zlib stream, returning Nothing on malformed input.
+-- ('Codec.Compression.Zlib.decompress' would instead throw an
+-- exception from pure code when the corrupt part of its lazy result
+-- is forced.)
+safeDecompress :: BL.ByteString -> Maybe ByteString
+safeDecompress = fmap B.concat .
+  Zlib.foldDecompressStreamWithInput
+    (\chunk rest -> (chunk :) <$> rest)
+    (const (Just []))
+    (const Nothing)
+    (Zlib.decompressST Zlib.zlibFormat Zlib.defaultDecompressParams)
 
 getSize :: ByteString -> Either T.Text ImageSize
 getSize img =
