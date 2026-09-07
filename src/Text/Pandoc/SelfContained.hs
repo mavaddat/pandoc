@@ -25,7 +25,7 @@ import qualified Data.ByteString.Lazy as L
 import qualified Data.Text as T
 import Data.Char (isAlphaNum, isAscii, toLower)
 import Crypto.Hash (hashWith, SHA1(SHA1))
-import Network.URI (escapeURIString)
+import Network.URI (escapeURIString, isUnescapedInURI)
 import System.FilePath (takeDirectory, takeExtension, (</>))
 import Text.HTML.TagSoup
 import Text.Pandoc.Class.PandocMonad (PandocMonad (..), fetchItem,
@@ -44,13 +44,10 @@ import Data.Maybe (isNothing)
 import qualified Data.Map as M
 import Control.Monad.State
 
-isOk :: Char -> Bool
-isOk c = isAscii c && isAlphaNum c
-
 makeDataURI :: (MimeType, ByteString) -> T.Text
 makeDataURI (mime, raw) =
   if textual
-     then "data:" <> mime' <> "," <> T.pack (escapeURIString isOk (toString raw))
+     then "data:" <> mime' <> "," <> T.pack (escapeURIString isUnescapedInURI (toString raw))
      else "data:" <> mime' <> ";base64," <> toText (encode raw')
   where textual = "text/" `T.isPrefixOf` mime
         raw' = if "+xml" `T.isSuffixOf` mime
