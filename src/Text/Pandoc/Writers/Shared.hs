@@ -261,8 +261,8 @@ isDisplayMath _                             = False
 -- | Remove leading and trailing 'Space' and 'SoftBreak' elements.
 stripLeadingTrailingSpace :: [Inline] -> [Inline]
 stripLeadingTrailingSpace = go . reverse . go . reverse
-  where go (Space:xs)     = xs
-        go (SoftBreak:xs) = xs
+  where go (Space:xs)     = go xs
+        go (SoftBreak:xs) = go xs
         go xs             = xs
 
 -- | Put display math in its own block (for ODT/DOCX).
