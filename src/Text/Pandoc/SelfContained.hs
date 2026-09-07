@@ -56,7 +56,7 @@ makeDataURI (mime, raw) =
         raw' = if "+xml" `T.isSuffixOf` mime
                   then B.filter (/= '\r') raw  -- strip off CRs
                   else raw
-        mime' = if textual && T.any (== ';') mime
+        mime' = if textual && not (T.any (== ';') mime)
                    then mime <> ";charset=utf-8"
                    else mime  -- mime type already has charset
 
