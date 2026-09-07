@@ -135,6 +135,11 @@ tests =
     , testCase "svg" $ imageType (svgFile "") @?= Just Svg
     , testCase "svg with xml declaration" $
         imageType ("<?xml version=\"1.0\"?>\n" <> svgFile "") @?= Just Svg
+    , testCase "uppercase svg with xml declaration" $
+        imageType "<?xml version=\"1.0\"?>\n<SVG></SVG>" @?= Just Svg
+    , testCase "xml that is not svg" $
+        imageType "<?xml version=\"1.0\"?>\n<html><p>svg</p></html>"
+          @?= Nothing
     , testCase "svg with BOM" $
         imageType ("\xef\xbb\xbf" <> svgFile "") @?= Just Svg
     , testCase "emf" $

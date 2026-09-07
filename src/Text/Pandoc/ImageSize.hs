@@ -147,8 +147,16 @@ imageType img = case B.take 4 img of
                                         -> return Avif
                      _ -> mzero
 
+-- | Check for the presence of an @<svg@ (or @<SVG@) tag, in a
+-- single pass over the file.
 findSvgTag :: ByteString -> Bool
-findSvgTag img = "<svg" `B.isInfixOf` img || "<SVG" `B.isInfixOf` img
+findSvgTag img = case B.elemIndex '<' img of
+  Nothing -> False
+  Just i ->
+    case B.drop (i + 1) img of
+      rest | "svg" `B.isPrefixOf` rest -> True
+           | "SVG" `B.isPrefixOf` rest -> True
+           | otherwise -> findSvgTag rest
 
 imageSize :: WriterOptions -> ByteString -> Either T.Text ImageSize
 imageSize opts img = checkDpi <$>
