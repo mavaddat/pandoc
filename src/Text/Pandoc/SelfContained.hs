@@ -156,12 +156,15 @@ convertTags (t@(TagOpen tagname as):ts)
                           Nothing -> False
                           Just cs -> "inline-svg" `elem` cs
        as' <- mapM (processAttribute inlineSvgs) as
-       let attrs = addRole "img" $ addAriaLabel $ rights as'
+       let attrs = rights as'
        let svgContents = lefts as'
        rest <- convertTags ts
        case svgContents of
          [] -> return $ TagOpen tagname attrs : rest
          ((hash, tags) : _) -> do
+             -- inlining the SVG loses the img element's alt text, so
+             -- we add role and aria-label to the svg element:
+             let svgImgAttrs = addRole "img" $ addAriaLabel attrs
              -- drop "</img>" if present
              let rest' = case rest of
                            TagClose tn : xs | tn == tagname ->  xs
@@ -169,7 +172,8 @@ convertTags (t@(TagOpen tagname as):ts)
              svgmap <- gets svgMap
              case M.lookup hash svgmap of
                Just (svgid, svgattrs) -> do
-                 let attrs' = [(k,v) | (k,v) <- combineSvgAttrs svgattrs attrs
+                 let attrs' = [(k,v) | (k,v) <- combineSvgAttrs svgattrs
+                                                  svgImgAttrs
                                      , k /= "id"]
                  return $ TagOpen "svg" attrs' :
                           TagOpen "use" [("href", "#" <> svgid),
@@ -181,7 +185,7 @@ convertTags (t@(TagOpen tagname as):ts)
                Nothing ->
                   case dropWhile (not . isTagOpenName "svg") tags of
                     TagOpen "svg" svgattrs : tags' -> do
-                      let attrs' = combineSvgAttrs svgattrs attrs
+                      let attrs' = combineSvgAttrs svgattrs svgImgAttrs
                       let svgid = case lookup "id" attrs' of
                                      Just id' -> id'
                                      Nothing -> "svg_" <> hash
