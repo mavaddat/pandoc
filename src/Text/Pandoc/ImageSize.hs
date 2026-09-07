@@ -292,12 +292,14 @@ epsSize img = do
   case ls' of
        []    -> mzero
        (x:_) -> case B.words x of
-                     [_, _, _, ux, uy] -> do
-                        ux' <- safeRead $ TE.decodeUtf8 ux
-                        uy' <- safeRead $ TE.decodeUtf8 uy
+                     [_, llx, lly, urx, ury] -> do
+                        llx' <- safeRead $ TE.decodeUtf8Lenient llx
+                        lly' <- safeRead $ TE.decodeUtf8Lenient lly
+                        urx' <- safeRead $ TE.decodeUtf8Lenient urx
+                        ury' <- safeRead $ TE.decodeUtf8Lenient ury
                         return ImageSize{
-                            pxX  = ux'
-                          , pxY  = uy'
+                            pxX  = urx' - llx'
+                          , pxY  = ury' - lly'
                           , dpiX = 72
                           , dpiY = 72 }
                      _ -> mzero
