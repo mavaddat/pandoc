@@ -679,6 +679,7 @@ toSubscript '-' = Just '\x208B'
 toSubscript '=' = Just '\x208C'
 toSubscript '(' = Just '\x208D'
 toSubscript ')' = Just '\x208E'
+toSubscript '\x2212' = Just '\x208B' -- unicode minus
 toSubscript c
   | c >= '0' && c <= '9' =
                  Just $ chr (0x2080 + (ord c - 48))
