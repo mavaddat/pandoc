@@ -38,7 +38,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Binary.Get
 import Data.Bits ((.&.), shiftR, shiftL)
-import Data.Word (bitReverse32, Word32)
+import Data.Word (Word32)
 import Data.Maybe (isJust, fromJust)
 import Data.Char (isDigit)
 import Control.Monad
@@ -450,8 +450,10 @@ pWebpSize = do
           h = toInteger <$> decode lossySize height16
       guard $ isJust w && isJust h
       return (fromJust w, fromJust h)
-    losslessSizes = runGetOrFail $ do
-      bitReverse32 <$> getWord32le
+    -- The VP8L bitstream is read starting from the least significant
+    -- bit of each byte, so after reading the 4 bytes as a little-endian
+    -- word, width - 1 is in bits 0-13 and height - 1 in bits 14-27.
+    losslessSizes = runGetOrFail getWord32le
     losslessSize word = 1 + (word .&. 0x3FFF)
     lossless = do
       AW.string "VP8L"
