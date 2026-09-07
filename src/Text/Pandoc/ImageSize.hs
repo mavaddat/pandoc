@@ -704,14 +704,14 @@ webpSize opts img =
     Right sz -> Just sz { dpiX = fromIntegral $ writerDpi opts, dpiY = fromIntegral $ writerDpi opts}
 
 avifSize :: WriterOptions -> ByteString -> Maybe ImageSize
-avifSize _opts img =
+avifSize opts img =
   case runGetOrFail (verifyFtyp >> findAvifDimensions) (BL.fromStrict img) of
     Left (_, _, _err) -> Nothing
     Right (_, _, (width, height)) ->
       Just $ ImageSize { pxX = fromIntegral width
                        , pxY = fromIntegral height
-                       , dpiX = 72
-                       , dpiY = 72 }
+                       , dpiX = fromIntegral $ writerDpi opts
+                       , dpiY = fromIntegral $ writerDpi opts }
 
 ---- AVIF parsing:
 

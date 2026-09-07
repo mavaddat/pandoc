@@ -240,9 +240,9 @@ tests =
       ]
     , testGroup "avif"
       [ testCase "ispe box" $
-          imageSize def avifIspe @?= Right (ImageSize 640 480 72 72)
+          imageSize def avifIspe @?= Right (ImageSize 640 480 96 96)
       , testCase "tkhd box" $
-          imageSize def avisTkhd @?= Right (ImageSize 640 480 72 72)
+          imageSize def avisTkhd @?= Right (ImageSize 640 480 96 96)
       ]
     , testGroup "png"  -- headers without image data, so these only
                        -- succeed if no decoding is attempted
