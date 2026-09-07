@@ -805,8 +805,8 @@ splitSentences = go . toList
         | c == '!' || c == '?' -> True
         | c == ')' || c == ']' || c == '"' || c == '\x201D' ->
            case T.unsnoc t' of
-             Just (t'',d) -> d == '.' || d == '!' || d == '?' &&
-                             not (isInitial t'')
+             Just (t'',d) -> (d == '.' && not (isInitial t''))
+                               || d == '!' || d == '?'
              _ -> False
       _ -> False
    where
