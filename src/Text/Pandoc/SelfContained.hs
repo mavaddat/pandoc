@@ -16,7 +16,7 @@ offline, by incorporating linked images, CSS, and scripts into
 the HTML using data URIs.
 -}
 module Text.Pandoc.SelfContained ( makeDataURI, makeSelfContained ) where
-import Codec.Compression.GZip as Gzip
+import qualified Codec.Compression.Zlib.Internal as Zlib
 import Control.Applicative ((<|>))
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64 (encode)
@@ -388,6 +388,18 @@ data GetDataResult =
   | Fetched (MimeType, ByteString)
   deriving (Show)
 
+-- | Decompress gzipped data, catching decompression errors instead
+-- of throwing an imprecise exception from pure code.
+decompressGzip :: ByteString -> Either T.Text ByteString
+decompressGzip bs =
+  B.concat <$>
+    Zlib.foldDecompressStreamWithInput
+      (\chunk rest -> (chunk :) <$> rest)
+      (const (Right []))
+      (Left . T.pack . show)
+      (Zlib.decompressST Zlib.gzipFormat Zlib.defaultDecompressParams)
+      (L.fromStrict bs)
+
 getData :: PandocMonad m
         => MimeType -> T.Text
         -> m GetDataResult
@@ -398,9 +410,15 @@ getData mimetype src
    fetcher = do
       let ext = T.toLower $ T.pack $ takeExtension $ T.unpack src
       (raw, respMime) <- fetchItem src
-      let raw' = if ext `elem` [".gz", ".svgz"]
-                 then B.concat $ L.toChunks $ Gzip.decompress $ L.fromChunks [raw]
-                 else raw
+      if ext `elem` [".gz", ".svgz"]
+         then case decompressGzip raw of
+                Right raw' -> processFetched raw' respMime
+                Left err -> do
+                  let msg = "could not decompress: " <> err
+                  report $ CouldNotFetchResource src msg
+                  return $ CouldNotFetch $ PandocSomeError msg
+         else processFetched raw respMime
+   processFetched raw' respMime = do
       let mime = case (mimetype, respMime) of
                   ("",Nothing) -> "application/octet-stream"
                   (x, Nothing) -> x
