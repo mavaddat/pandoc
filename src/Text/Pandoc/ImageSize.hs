@@ -387,8 +387,11 @@ svgSize opts img = do
                                      $ TL.fromStrict $ UTF8.toText $ dropBOM img
   let viewboxSize = do
         vb <- findAttrBy (== QName "viewBox" Nothing Nothing) doc
-        [_,_,w,h] <- mapM safeRead (T.words vb)
-        return (w,h)
+        -- per the SVG spec, the numbers are separated by whitespace
+        -- and/or a comma, and may be fractional:
+        [_,_,w,h] <- mapM safeRead $ T.words $
+                       T.map (\c -> if c == ',' then ' ' else c) vb
+        return (floor (w :: Double), floor (h :: Double))
   let dpi = fromIntegral $ writerDpi opts
   let dirToInt dir = do
         dim <- findAttrBy (== QName dir Nothing Nothing) doc >>= lengthToDim
