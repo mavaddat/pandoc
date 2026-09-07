@@ -312,9 +312,8 @@ pCSSImport d = P.try $ do
   res <- (pQuoted <|> pUrl) >>= handleCSSUrl d
   P.spaces
   P.char ';'
-  P.spaces
   case res of
-       Left b       -> return $ B.pack "@import " <> b
+       Left b       -> return $ B.pack "@import " <> b <> B.pack ";"
        Right (_, b) -> return b
 
 -- Note: some whitespace in CSS is significant, so we can't collapse it!
