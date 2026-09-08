@@ -23,7 +23,7 @@ import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as L
 import qualified Data.Text as T
-import Data.Char (isAlphaNum, isAscii, toLower)
+import Data.Char (toLower)
 import Crypto.Hash (hashWith, SHA1(SHA1))
 import Network.URI (escapeURIString, isUnescapedInURI)
 import System.FilePath (takeDirectory, takeExtension, (</>))
